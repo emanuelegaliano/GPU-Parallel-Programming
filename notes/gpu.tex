@@ -1,0 +1,260 @@
+\documentclass[a4paper,11pt]{book}
+
+% =====================================================
+% LANGUAGE AND ENCODING
+% =====================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[italian]{babel}
+
+% =====================================================
+% TYPOGRAPHY
+% =====================================================
+\usepackage{libertinus}                 % serif + math
+\usepackage[scale=0.95]{sourcesanspro}  % sans for metadata
+\usepackage{microtype}
+\usepackage{xcolor}
+
+% =====================================================
+% COLOR PALETTE
+% =====================================================
+\definecolor{Accent}{HTML}{0B3A3E}
+\definecolor{TextGray}{gray}{0.25}
+\definecolor{RuleGray}{gray}{0.75}
+
+% =====================================================
+% GRAPHICS
+% =====================================================
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,decorations.pathreplacing,calc}
+
+% =====================================================
+% SUBFIGURES
+% =====================================================
+\usepackage{subcaption}
+
+% =====================================================
+% CODE LISTINGS
+% =====================================================
+\usepackage{listings}
+\usepackage[scaled=0.9]{beramono}
+\lstdefinestyle{py}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  numbers=left,
+  numbersep=8pt,
+  frame=single,
+  framerule=0.4pt,
+  breaklines=true,
+  tabsize=4,
+  showstringspaces=false,
+  captionpos=b
+}
+
+% =====================================================
+% MATHEMATICS
+% =====================================================
+\usepackage{amsmath,amssymb,amsthm}
+\numberwithin{equation}{chapter}
+
+% =====================================================
+% PAGE LAYOUT
+% =====================================================
+\usepackage{geometry}
+\geometry{a4paper, top=28mm, bottom=30mm, left=30mm, right=30mm}
+
+\usepackage{setspace}
+\setstretch{1.12}
+
+\clubpenalty=10000
+\widowpenalty=10000
+
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{2}
+
+% =====================================================
+% HEADERS AND FOOTERS
+% =====================================================
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\thepage}
+\fancyhead[LO]{\nouppercase{\rightmark}}
+\fancyhead[RE]{\nouppercase{\leftmark}}
+\setlength{\headheight}{15pt}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% =====================================================
+% TABLES
+% =====================================================
+\usepackage{booktabs}
+
+% =====================================================
+% LISTS
+% =====================================================
+\usepackage{enumitem}
+\setlist[itemize]{topsep=4pt, itemsep=3pt}
+\setlist[enumerate]{topsep=4pt, itemsep=3pt}
+\setlist[description]{font=\normalfont\bfseries, labelsep=0.6em, leftmargin=2em}
+
+% =====================================================
+% MULTICOLUMN
+% =====================================================
+\usepackage{multicol}
+
+% =====================================================
+% ALGORITHMS
+% =====================================================
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% =====================================================
+% LINKS
+% =====================================================
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+
+% =====================================================
+% BIBLIOGRAPHY
+% =====================================================
+\usepackage{csquotes}
+\usepackage[backend=bibtex]{biblatex}
+\addbibresource{refs.bib}
+
+% =====================================================
+% COVER BACKGROUND PATTERN
+% =====================================================
+\newcommand{\DataPattern}{
+  \begin{tikzpicture}[remember picture,overlay]
+    \foreach \x in {0.12,0.22,...,0.88} {
+      \foreach \y in {0.10,0.20,...,0.90} {
+        \fill[Accent!7] ($(current page.south west) + (\x\paperwidth,\y\paperheight)$)
+          circle[radius=0.55pt];
+      }
+    }
+    \draw[Accent!10,line width=0.6pt]
+      ($(current page.south west)+(0.06\paperwidth,0.30\paperheight)$)
+      .. controls ($(current page.south west)+(0.35\paperwidth,0.55\paperheight)$)
+      and ($(current page.south west)+(0.55\paperwidth,0.20\paperheight)$)
+      .. ($(current page.south west)+(0.92\paperwidth,0.48\paperheight)$);
+  \end{tikzpicture}
+}
+
+% =====================================================
+% METADATA (TEMPLATE)
+% - Campi vuoti, tranne Uni/Dept/AY/LogoPath mantenuti
+% =====================================================
+\newcommand{\BookTitle}{Programmazione parallela su architetture GPU}
+\newcommand{\BookSubtitle}{Appunti personali}
+\newcommand{\BookAuthor}{Emanuele Galiano}
+
+\newcommand{\BookUni}{Università degli Studi di Catania}
+\newcommand{\BookDept}{Dipartimento di Matematica e Informatica}
+\newcommand{\BookAY}{Anno Accademico 2025/2026}
+\newcommand{\BookLogoPath}{images/unict_logo.jpg}
+
+% =====================================================
+% DOCUMENT
+% =====================================================
+\begin{document}
+
+\frontmatter
+
+% =====================================================
+% TITLE PAGE
+% =====================================================
+\begin{titlepage}
+\thispagestyle{empty}
+\DataPattern
+
+\begin{center}
+\vspace*{18mm}
+
+{\fontsize{28}{34}\selectfont\bfseries\color{Accent} \BookTitle\par}
+
+\vspace{7mm}
+{\color{Accent}\rule{0.66\textwidth}{1.1pt}}
+
+\vspace{10mm}
+{\Large\sffamily\color{TextGray}\BookSubtitle\par}
+
+\vspace{20mm}
+\includegraphics[height=16mm]{\BookLogoPath}
+
+\vspace{12mm}
+{\sffamily\color{TextGray}
+\BookUni\\[1mm]
+\BookDept\\[1mm]
+Corso di Laurea Triennale in Informatica (L-31)
+\par}
+
+\vfill
+
+\begin{minipage}{0.92\textwidth}
+\sffamily\small\color{TextGray}
+
+% --- Autori (sinistra) / Revisione (destra) ---
+\begin{minipage}[t]{0.48\textwidth}
+\begin{flushleft}
+\textbf{\color{Accent}Autori}\\
+\BookAuthor
+\end{flushleft}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+\begin{flushright}
+%\textbf{\color{Accent}Revisione}\\
+%coming soon
+\end{flushright}
+\end{minipage}
+
+\vspace{4mm}
+{\color{RuleGray}\rule{\textwidth}{0.4pt}}
+
+% --- Anno accademico + Versione (sotto la linea) ---
+\vspace{4mm}
+\begin{flushleft}
+\textbf{\color{Accent}Anno accademico}\\
+\BookAY
+
+\vspace{2mm}
+\footnotesize
+Versione: \today
+\end{flushleft}
+
+\end{minipage}
+
+\vspace*{6mm}
+\end{center}
+\end{titlepage}
+
+% =====================================================
+% PREFACE (EXTERNAL)
+% =====================================================
+\input{frontmatter/preface}
+
+% =====================================================
+% LICENSE PAGE (EXTERNAL)
+% =====================================================
+\input{frontmatter/license}
+
+% =====================================================
+% TOC
+% =====================================================
+\tableofcontents
+\cleardoublepage
+
+% =====================================================
+% MAIN CONTENT (EMPTY TEMPLATE)
+% =====================================================
+\mainmatter
+% Inserisci qui i tuoi \part, \chapter e/o \input{...}
+
+% =====================================================
+% BIBLIOGRAPHY
+% =====================================================
+\backmatter
+\printbibliography
+
+\end{document}
