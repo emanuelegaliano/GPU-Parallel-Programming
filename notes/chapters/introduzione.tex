@@ -211,3 +211,48 @@ I task possono essere distribuiti dinamicamente tra le unità e il carico di lav
 \end{figure}
 
 \subsection{Data-based parallelism}
+Il data-based parallelism si basa sull'esecuzione di operazioni in parallelo su diversi dati. Tutte le unità computazionali fanno lo stesso lavoro, la divisione del lavoro avviene sui dati.  Si preferisce questo approccio quando:
+\begin{itemize}
+    \item Il lavoro può essere suddiviso in operazioni simili e semplici da eseguire su diversi dati.
+    \item Si deve lavorare con una grossa mole di dati che può essere facilmente suddivisa in blocchi indipendenti.
+\end{itemize}
+
+\paragraph{Esempio: somma vettoriale.}
+
+Un esempio classico di parallelismo \emph{data-based} è la somma vettoriale. 
+Consideriamo due vettori $A$ e $B$ di lunghezza $N$ e un vettore risultato $C$, tale che:
+
+\[
+C_i = A_i + B_i \qquad i = 0, \dots, N-1
+\]
+
+In questo caso l'operazione da eseguire è la stessa per tutti gli elementi, mentre cambiano solo i dati su cui essa viene applicata. 
+Questo rende il problema particolarmente adatto al parallelismo data-based, poiché ogni elemento del vettore può essere elaborato indipendentemente dagli altri.
+
+\begin{description}
+    \item[Seriale.] -  Nel caso \textbf{seriale} (Figura~\ref{fig:data-serial}) un'unica unità di calcolo esegue tutte le operazioni in sequenza. Per ogni indice $i$ vengono letti gli elementi $A_i$ e $B_i$, viene calcolata la somma e il risultato viene scritto nella posizione corrispondente del vettore $C$.  L'intero vettore viene quindi processato elemento per elemento.
+    \item[Parallelo.] - Nel caso \textbf{parallelo} (Figura~\ref{fig:data-parallel}), invece, più unità di calcolo eseguono la stessa operazione contemporaneamente su elementi diversi dei vettori. 
+    Ogni unità si occupa di un indice differente $i$, leggendo $A_i$ e $B_i$, calcolando la somma e scrivendo il risultato in $C_i$. 
+    Poiché non esistono dipendenze tra le operazioni sui diversi elementi, tutte le somme possono essere eseguite in parallelo.  
+\end{description}
+
+\begin{figure}[h]
+\centering
+
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{images/vector_add_serial.png}
+\caption{Somma vettoriale eseguita in modo seriale.}
+\label{fig:data-serial}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{images/vector_add_parallel.png}
+\caption{Somma vettoriale con parallelismo data-based.}
+\label{fig:data-parallel}
+\end{minipage}
+
+\end{figure}
+
+\section{Hardware per il calcolo parallelo}
