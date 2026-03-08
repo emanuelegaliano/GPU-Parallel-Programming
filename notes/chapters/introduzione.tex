@@ -256,3 +256,233 @@ Questo rende il problema particolarmente adatto al parallelismo data-based, poic
 \end{figure}
 
 \section{Hardware per il calcolo parallelo}
+L'hardware per il calcolo parallelo è progettato per supportare l'esecuzione simultanea di più operazioni. Si può classificare l'hardware parallelo in base a come gestisce le sue risorse di calcolo e, in particolare, di memoria.
+
+\subsection{Shared memory}
+In un'architettura a memoria condivisa, tutte le unità di calcolo accedono alla stessa memoria centrale. Questo permette una comunicazione semplice tra le unità, poiché possono leggere e scrivere direttamente sui dati condivisi. Questo modello ha una comunicazione più semplice e meno latenza in generale, ma può essere limitato dalla contesa per l'accesso alla memoria e dalla scalabilità, poiché tutte le unità competono per le stesse risorse di memoria.
+
+\subsection{Distributed memory}
+In un'architettura a memoria distribuita, ogni unità di calcolo ha la propria memoria locale e non può accedere direttamente alla memoria delle altre unità. La comunicazione tra le unità avviene attraverso un sistema di messaggistica, in cui i dati devono essere esplicitamente inviati e ricevuti tra le unità. Questo modello è sicuramente più scalabile e può gestire grandi quantità di dati, ma la comunicazione tra le unità è più complessa e può introdurre latenza significativa, soprattutto se i dati devono essere scambiati frequentemente.
+ 
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/shared_vs_distributed.png}
+    \caption{Confronto tra architettura a memoria condivisa (in alto), dove più CPU accedono alla stessa RAM, e architettura a memoria distribuita (in basso), dove ogni nodo possiede memoria locale e comunica con gli altri.}
+    \label{fig:shared-vs-distributed}
+\end{figure}
+
+\subsection{Ibrida}
+Un'architettura ibrida combina elementi di entrambe le architetture a memoria condivisa e distribuita. In questo modello, le unità di calcolo sono organizzate in gruppi, dove ogni gruppo condivide una memoria locale, ma i gruppi stessi comunicano tra loro attraverso un sistema di messaggistica. Questo approccio cerca di bilanciare i vantaggi di entrambi i modelli, offrendo una maggiore scalabilità rispetto alla memoria condivisa, pur mantenendo una comunicazione più efficiente all'interno dei gruppi.
+
+Un esempio sono i cluster di computer, dove ogni nodo del cluster ha la propria memoria locale, ma i nodi comunicano tra loro attraverso una rete ad alta velocità. All'interno di ogni nodo, le CPU possono accedere alla memoria condivisa, mentre tra i nodi la comunicazione avviene tramite messaggi.
+
+\section{Concorrenza, latenza e banda}
+Esistono misure di prestazioni per i sistemi paralleli che aiutano a comprendere l'efficienza e le limitazioni di un'architettura o di un algoritmo parallelo. Le principali sono:
+\begin{description}
+    \item[Latenza: ] la latenza è il tempo necessario per completare un'operazione o una comunicazione. In un sistema parallelo, la latenza può essere influenzata da fattori come la contesa per le risorse, la comunicazione tra unità di calcolo e la sincronizzazione tra processi. Una bassa latenza è desiderabile per garantire che le operazioni vengano completate rapidamente e che le unità di calcolo non restino inattive in attesa di completare le operazioni.
+    \item[Banda: ] la banda è la quantità di dati che può essere trasferita in un certo periodo di tempo. In un sistema parallelo, la banda è importante per garantire che i dati possano essere scambiati rapidamente tra le unità di calcolo, soprattutto in architetture a memoria distribuita. Una banda elevata è necessaria per evitare colli di bottiglia nella comunicazione e per garantire che le unità di calcolo possano accedere ai dati di cui hanno bisogno senza ritardi significativi.
+    \item[Concorrenza: ] la concorrenza si riferisce alla capacità di un sistema di eseguire più operazioni contemporaneamente. In un sistema parallelo, la concorrenza è essenziale per sfruttare a pieno le risorse di calcolo disponibili. Tuttavia, la concorrenza può introdurre complessità nella gestione delle risorse, nella sincronizzazione tra processi e nella risoluzione di conflitti, soprattutto quando più processi accedono a dati condivisi. Per gestire la concorrenza in modo efficace esistono due soluzioni principali:
+    \begin{itemize}
+        \item Operazioni atomiche, ovvero operazioni che vengono eseguite in modo indivisibile, garantendo che nessun altro processo possa interferire durante la loro esecuzione.
+        \item Semafori e/o mutex, che sono meccanismi di sincronizzazione che consentono di controllare l'accesso a risorse condivise, evitando conflitti e garantendo la coerenza dei dati.
+    \end{itemize}
+\end{description}
+
+\paragraph{Esempio: latenza vs banda.}
+Ipotizziamo una connessione ad alta velocità, come \emph{HyperTransport}, con il trasporto fisico di dati tramite un camion pieno di schede di memoria. 
+Nel primo caso la bandwidth è di circa $50\ \text{GB/s}$ con una latenza massima di circa $256\ \text{ns}$. 
+Nel secondo caso, considerando un camion carico di schede microSD, la quantità totale di dati trasportabili può essere estremamente elevata, raggiungendo una bandwidth teorica superiore a $1000\ \text{TB/s}$. 
+Tuttavia, il tempo necessario affinché i dati arrivino a destinazione è dell'ordine delle ore, risultando quindi in una latenza molto elevata.
+
+Per migliorare le prestazioni dei sistemi paralleli è quindi importante adottare alcune strategie:
+
+\begin{itemize}
+\item evitare trasferimenti inutili, in modo da utilizzare la bandwidth in maniera più efficiente;
+\item accorpare più trasferimenti in operazioni più grandi, così da ammortizzare il costo della latenza.
+\end{itemize}
+
+\section{Richiesta e offerta di calcolo parallelo}
+Il calcolo parallelo è diventato sempre più importante negli ultimi anni, sia per la crescente domanda di potenza di calcolo da parte di applicazioni complesse, sia per l'evoluzione dell'hardware che ha reso possibile l'esecuzione di operazioni in parallelo. 
+
+\subsection{Domanda di calcolo parallelo}
+Generalmente in contesti \textbf{scientifici}, \textbf{industriali} e \textbf{commerciali} si richiede un'elevata potenza di calcolo per affrontare problemi complessi, analizzare grandi quantità di dati e sviluppare applicazioni avanzate. Gli usi principali sono:
+\begin{itemize}
+    \item Monitoraggio: il calcolo parallelo consente di analizzare in tempo reale grandi quantità di dati provenienti da sensori, dispositivi IoT e sistemi di monitoraggio, permettendo di rilevare anomalie, prevedere guasti e ottimizzare le prestazioni.
+    \item Simulazione: il calcolo parallelo è essenziale per eseguire simulazioni complesse in campi come la fisica, la chimica, l'ingegneria e la biologia, dove è necessario modellare fenomeni naturali, processi industriali o sistemi complessi.
+    \item Analisi dei dati: il calcolo parallelo è fondamentale per l'analisi di grandi dataset, come quelli generati da social media, e-commerce, finanza e ricerca scientifica, consentendo di estrarre informazioni utili, identificare tendenze e prendere decisioni informate.
+\end{itemize}
+
+\subsection{Offerta di calcolo parallelo}
+D'altra parte, l'offerta di calcolo parallelo è cresciuta significativamente grazie all'evoluzione dell'hardware e alla diffusione di tecnologie come i processori multi-core, le GPU e i cluster di computer. Queste tecnologie hanno reso possibile l'esecuzione di operazioni in parallelo su larga scala, offrendo una vasta potenza di calcolo. Oggi è possibile acquistare diverse soluzioni hardware per il calcolo parallelo, ciascuna con caratteristiche, vantaggi e limiti differenti.
+
+\begin{description}
+
+\item[Cluster:] rappresentano la soluzione più tradizionale su cui si è sviluppato il \emph{distributed computing}. 
+Un cluster è composto da $n$ nodi, ciascuno dotato di CPU multi-core e memoria locale, collegati tra loro tramite una rete ad alta velocità. 
+Questa architettura è ampiamente utilizzata in ambito scientifico e industriale per applicazioni che richiedono elevate capacità di calcolo.
+
+I cluster costituiscono una soluzione classica e consolidata nel tempo, supportata da un vasto ecosistema software e da una grande diffusione di competenze tecniche. 
+Offrono inoltre un'elevata flessibilità, poiché è possibile adattare l'infrastruttura a diverse tipologie di applicazioni.
+
+D'altra parte, presentano anche alcuni svantaggi significativi. 
+L'investimento iniziale in termini di hardware può essere molto elevato e i costi di manutenzione risultano spesso importanti, soprattutto per quanto riguarda il consumo energetico e i sistemi di raffreddamento. 
+Inoltre il rapporto costo/prestazioni può risultare relativamente alto e l'efficienza energetica, misurata come prestazioni per watt consumato, non è sempre ottimale.
+
+\item[GPU:] le unità di elaborazione grafica sono nate originariamente per l'elaborazione grafica nei videogiochi, ma nel tempo si è scoperto che la loro architettura altamente parallela poteva essere sfruttata anche per il calcolo generale. 
+Da questa intuizione è nato il paradigma \emph{GPGPU} (\emph{General-Purpose computing on GPU}), che consente di utilizzare le GPU per eseguire calcoli scientifici e applicazioni ad alte prestazioni.
+
+Le GPU offrono diversi vantaggi: il costo iniziale dell'hardware è generalmente inferiore rispetto a soluzioni basate su grandi cluster, così come i costi di manutenzione. 
+Inoltre presentano un rapporto prezzo/prestazioni molto favorevole e un'elevata efficienza energetica, rendendole particolarmente adatte per applicazioni come machine learning, simulazioni numeriche e analisi di grandi quantità di dati.
+
+Tuttavia, si tratta di una tecnologia relativamente più recente rispetto ai cluster tradizionali. 
+Il modello di programmazione GPGPU ha iniziato a diffondersi solo a partire dalla fine del 2006 e dall'inizio del 2007, e per questo motivo l'ecosistema software è storicamente meno maturo. 
+In alcuni contesti sono ancora disponibili meno strumenti, meno applicazioni consolidate e una minore diffusione di competenze specifiche, oltre a una flessibilità talvolta inferiore rispetto alle architetture più tradizionali.
+
+\item[Acceleratori:] dispositivi specializzati che affiancano la CPU per eseguire operazioni specifiche in modo altamente parallelo. 
+Questi componenti vengono utilizzati per migliorare le prestazioni in determinati ambiti applicativi, come l'elaborazione di segnali, la crittografia, il machine learning o il calcolo scientifico ad alte prestazioni. 
+Gli acceleratori permettono di delegare alcune operazioni particolarmente intensive a hardware dedicato, aumentando l'efficienza complessiva del sistema.
+
+\end{description}
+
+\subsection{Videogiochi e GPU}
+I videogiochi rappresentano un esempio di applicazione che richiede un'elevata potenza di calcolo parallelo, soprattutto per quanto riguarda l'elaborazione grafica. Le GPU sono state sviluppate proprio per soddisfare questa esigenza, consentendo di renderizzare scene complesse in tempo reale. I giochi moderni devono supportare:
+\begin{itemize}
+    \item Gameplay più sofisticato
+    \item Grafiche più complesse
+    \item Tre dimensioni
+    \item Fisica più realistica
+\end{itemize}
+e per farlo devono sfruttare software e hardware migliori.
+
+\paragraph{Esempio: software migliore.}
+Un esempio storico di ottimizzazione software molto noto nel contesto dei videogiochi è l'algoritmo per il calcolo rapido dell'inversa della radice quadrata, utilizzato per velocizzare operazioni molto frequenti nella grafica 3D, come la normalizzazione dei vettori.
+
+\begin{lstlisting}[language=C,
+basicstyle=\ttfamily\small,
+keywordstyle=\color{green!50!black}\bfseries,
+commentstyle=\color{cyan!60!black}\itshape,
+stringstyle=\color{orange!70!black},
+identifierstyle=\color{black},
+numbers=none,
+showstringspaces=false]
+float rsqrt(float x)
+{
+    float h = x/2;
+    int i = *(int*)&x;
+    i = 0x5f3758d - (i>>2);
+    x = *(float*)&i;
+    return x*(1.5f - h*x*x); /* newton */
+}
+\end{lstlisting}
+
+Questo codice implementa una stima rapida di $1/\sqrt{x}$. 
+L'idea è ottenere una prima approssimazione tramite una manipolazione diretta della rappresentazione binaria del numero floating-point e poi migliorarla con un'iterazione del metodo di Newton. L'efficienza di questo approccio deriva dal fatto che evita il calcolo diretto della radice quadrata, che storicamente era molto più costoso dal punto di vista computazionale. 
+
+\paragraph{Esempio: hardware migliore.}
+Per ottenere hardware migliore si possono seguire diverse strategie:
+\begin{itemize}
+    \item CPU più veloci, con frequenze di clock più elevate e architetture più efficienti. Questo ha un costo elevato e limita la scalabilità, poiché esistono limiti fisici alla velocità di clock e all'efficienza energetica delle CPU.
+    \item Più dischi rigidi, per aumentare la capacità di archiviazione e migliorare le prestazioni di I/O. Tuttavia, questo approccio non migliora direttamente la potenza di calcolo e può introdurre colli di bottiglia nella gestione dei dati.
+    \item Più memoria RAM e cache, per ridurre i tempi di accesso ai dati e migliorare le prestazioni complessive del sistema. Anche questo approccio ha limiti in termini di costo e scalabilità, poiché la memoria è una risorsa costosa e l'efficienza energetica può diminuire con l'aumentare della quantità di memoria.
+    \item Hardware video dedicato, come le GPU, che offrono un'architettura altamente parallela e sono progettate per gestire carichi di lavoro specifici come l'elaborazione grafica. Questo approccio è particolarmente efficace per migliorare le prestazioni nei videogiochi, ma può essere meno flessibile rispetto a soluzioni più generiche come i cluster di CPU.
+\end{itemize}
+
+\section{Storia delle GPU}
+
+\subsection{Dai primi adattatori video alle prime schede programmabili}
+
+L'evoluzione delle GPU può essere interpretata come un progressivo aumento di quattro aspetti fondamentali: \textbf{risoluzione}, \textbf{numero di colori}, \textbf{accelerazione hardware} e \textbf{programmabilità}. Le prime schede video erano semplici adattatori grafici: \textbf{CGA} (1981) supportava $640\times 200$ in monocromatico oppure $320\times 200$ con 4 colori, oltre a modalità testuali con 16 colori. Con \textbf{EGA} (1984) si passa a $640\times 350$ con una palette di 16 colori scelta da un insieme di 64, ottenendo quindi una migliore qualità visiva sia in termini di dettaglio sia di rappresentazione cromatica.
+
+Un salto più importante si ha con \textbf{VGA} (1987), che introduce 6 bit per colore per pixel, fino a 262\,144 colori rappresentabili, e modalità standard come $640\times 480$ con 16 colori da una palette di 256 e $320\times 200$ con 256 colori. VGA viene anche considerato il primo adattatore video pienamente programmabile. Nello stesso periodo compaiono soluzioni come \textbf{IBM 8514}, che oltre a supportare $1024\times 768$ con 256 colori in modalità interlacciata introducono l'accelerazione hardware di primitive 2D, come il disegno di linee, il riempimento di aree e il \emph{bit blit}. Con \textbf{XGA} (1990) si consolidano ulteriormente questi miglioramenti, con modalità come $800\times 600$ a 16 bit di colore e $1024\times 768$ con palette a 256 colori.
+
+\subsection{La transizione verso la grafica 3D}
+
+Negli anni Novanta, la diffusione delle interfacce grafiche e soprattutto dei videogiochi 3D cambia il ruolo delle schede video: non devono più soltanto visualizzare immagini, ma accelerare trasformazioni geometriche, illuminazione e rendering di scene tridimensionali. Nascono così le prime schede dedicate al 3D, che ottengono grande successo commerciale grazie a una grafica più pulita e animazioni più fluide.
+
+Per rendere l'accesso a questo hardware più uniforme si affermano API standard come \textbf{OpenGL} e \textbf{DirectX}. Con l'introduzione del \textbf{programmable shading}, le schede video smettono di essere pipeline fisse e diventano dispositivi progressivamente programmabili: è in questo contesto che si diffonde il termine \textbf{GPU}.
+
+\subsection{Dalla GPU al GPGPU}
+
+Da qui nasce anche l'idea di utilizzare la GPU non solo per la grafica ma anche per il calcolo generale. In una prima fase, intorno al 2004, i problemi numerici venivano trasformati artificialmente in problemi grafici e risolti tramite il rendering, in modo complesso ma spesso efficace. La vera svolta arriva quando i produttori rendono accessibile in modo diretto la potenza di calcolo delle GPU: \textbf{ATI/AMD} con \textbf{CAL} e \textbf{NVIDIA} con \textbf{CUDA}. Da questo momento la GPU non è più soltanto un acceleratore grafico, ma una vera piattaforma di calcolo parallelo programmabile.
+
+\section{GPU moderne}
+Oggi le GPU sono dispositivi estremamente potenti e versatili, utilizzati non solo per la grafica ma anche per una vasta gamma di applicazioni scientifiche, industriali e commerciali. Le GPU moderne sono caratterizzate da un'architettura altamente parallela, si parla di centinaia di multi-processori ognuno equipaggiato con circa 100 \textbf{Processing Unit} (come i CUDA core di NVIDIA), che consentono di eseguire migliaia di thread contemporaneamente. Una processing unit è un'unità di calcolo che esegue operazioni aritmetiche e logiche sui dati, ed è progettata per gestire carichi di lavoro altamente paralleli.
+
+\subsection{GPU e GPU: performance e costi}
+Le GPU e le CPU sono progettate per scopi diversi e presentano caratteristiche architetturali differenti, che is riflettono molto sulle prestazioni finali. Le GPU sono ottimizzate per eseguire un gran numero di operazioni in parallelo, con un'architettura che consente di gestire migliaia di thread contemporaneamente. Le CPU, invece, sono progettate per eseguire operazioni più complesse e meno parallelizzabili, con un numero limitato di core e una maggiore enfasi sulla latenza.
+
+Dalle tabelle riportate in Tabella~\ref{tab:gpu_cpu_performance} si può notare che le GPU offrono un numero significativamente maggiore di unità di elaborazione (MPs) e una maggiore potenza di calcolo in termini di FLOPS rispetto alle CPU.
+Inoltre, le GPU tendono ad avere una banda di memoria molto più elevata rispetto alle CPU, il che è cruciale per gestire i grandi volumi di dati necessari per le applicazioni di calcolo parallelo. Tuttavia, è importante considerare anche i costi associati all'acquisto e alla manutenzione di questi dispositivi, nonché la complessità dell'ecosistema software e la disponibilità di competenze specifiche per sfruttare a pieno le potenzialità delle GPU. 
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\multicolumn{5}{c}{\textbf{GPU vs CPU: performance}} \\[0.3em]
+\hline
+\textbf{Model} & \textbf{MPs} & \textbf{PE/MP} & \textbf{FLOPS (TFLOPS)} & \textbf{bandwidth (GB/s)} \\
+\hline
+AMD Radeon VII   & 60 & 64 & 11.1 & 1028 \\
+NVIDIA TITAN RTX & 72 & 64 & 12.4 & 672 \\
+\hline
+\end{tabular}
+
+\vspace{0.8cm}
+
+\begin{tabular}{lcccc}
+\textbf{Model} & \textbf{cores} & \textbf{PE/core} & \textbf{FLOPS (GFLOPS)} & \textbf{bandwidth (GB/s)} \\
+\hline
+AMD EPYC 7702P 2GHz      & 64 & 16 & 4096 & 143.1 \\
+Intel Xeon W-3275M 2.5GHz & 28 & 32 & 3072 & 131.13 \\
+\hline
+\end{tabular}
+\caption{Confronto prestazionale tra alcune GPU e CPU.}
+\label{tab:gpu_cpu_performance}
+\end{table}
+
+\paragraph{APU.}
+Una terza opzione è rappresentata dalle APU (\textbf{Accelerated Processing Unit}), che integrano CPU e GPU su un unico chip. Le APU offrono un compromesso tra le prestazioni di calcolo parallelo delle GPU e la flessibilità delle CPU, consentendo di eseguire sia operazioni generali che specifiche per la grafica in modo efficiente. Tuttavia, le APU tendono ad avere prestazioni inferiori rispetto a soluzioni dedicate come le GPU discrete, ma possono essere una scelta interessante per applicazioni che richiedono un equilibrio tra potenza di calcolo e costi.
+
+\section{Parallelizzazione}
+
+\subsection{Concetto generale di parallelizzazione}
+
+La parallelizzazione è il processo di suddivisione di un problema o di un algoritmo seriale in un algoritmo parallelo. Ipotizziamo due estremi:
+\begin{description}
+    \item[Un algoritmo intrinsecamente seriale] è un algoritmo che non può essere parallelizzato, poiché ogni operazione dipende, per esempio, strettamente dai risultati delle operazioni precedenti. In questo caso, l'unico modo per eseguire l'algoritmo è in modalità sequenziale, e lo speed-up ottenibile con il calcolo parallelo è limitato. Tuttavia un modo per parallelizzare un algoritmo seriale è quello di fare parallelismo \emph{data-based}, ovvero eseguire in parallelo operazioni simili su dati diversi, anche se l'algoritmo stesso non è parallelizzabile.
+    \item[Un algoritmo intrinsecamente parallelo] è un algoritmo che può essere suddiviso in parti indipendenti che possono essere eseguite contemporaneamente. In questo caso, è possibile ottenere uno speed-up significativo utilizzando più unità di calcolo, poiché le operazioni possono essere eseguite in parallelo senza dipendenze.
+\end{description}
+
+\subsection{Algoritmi con parallelismo parziale}
+
+Esistono però vie di mezzo, ovvero algoritmi che non sono intrinsecamente seriali ma che presentano una certa quantità di parallelismo. Alcuni esempio sono:
+\begin{itemize}
+    \item Riduzione: operazioni che combinano più elementi in un unico risultato, come la somma di un array o il prodotto di matrici. Questi algoritmi possono essere parallelizzati suddividendo i dati in blocchi e combinando i risultati parziali.
+    \item Scan: operazioni che producono un array di risultati parziali, come la somma cumulativa o il prefisso di un array. Questi algoritmi possono essere parallelizzati utilizzando tecniche come il \emph{divide and conquer} per suddividere i dati e combinare i risultati.
+    \item Algoritmi di ordinamento: algoritmi come il merge sort o il quicksort possono essere parallelizzati suddividendo l'array in parti più piccole e ordinando ciascuna parte in parallelo, per poi combinare i risultati.
+\end{itemize}
+
+\subsection{Parallelismo in hardware}
+
+Dal punto di vista dell'hardware, esistono diversi modelli con cui il parallelismo può essere implementato. I principali sono:
+
+\begin{description}
+    \item[SIMD] (\emph{Single Instruction, Multiple Data}) indica un modello in cui una singola istruzione opera contemporaneamente su più dati. Questo approccio è tipico delle istruzioni vettoriali presenti nelle CPU moderne, come MMX, AltiVec, SSE, NEON o AVX, ed è particolarmente efficace quando si devono eseguire gli stessi calcoli su vettori o array.
+    
+    \item[SPMD] (\emph{Single Program, Multiple Data}) indica un modello nel quale la stessa sequenza di istruzioni viene eseguita da più unità di calcolo contemporaneamente su dati differenti. In questo caso non si parla necessariamente di una singola istruzione eseguita nello stesso istante, ma dello stesso programma applicato a porzioni diverse dell'input. Questo modello può essere supportato sia dall'hardware sia dal software.
+    
+    \item[SIMT] (\emph{Single Instruction, Multiple Threads}) è un modello tipico delle GPU. In questo caso l'hardware gestisce automaticamente gruppi di thread che eseguono la stessa istruzione in parallelo. Si tratta quindi di un modello vicino a SPMD, ma con una gestione dei thread fortemente integrata a livello hardware.
+\end{description}
+
+In generale, si può osservare che le \textbf{GPU} moderne sono tipicamente associate ai modelli \textbf{SPMD} e \textbf{SIMT}, mentre le \textbf{CPU} moderne sono principalmente \textbf{SIMD}, eventualmente affiancate da forme di SPMD controllate dal software.
+
+\subsection{Parallelismo in software}
+
+Dal punto di vista software, il parallelismo può essere organizzato secondo modelli differenti. I principali sono:
+
+\begin{description}
+    \item[Multi-processing] è il parallelismo basato su più thread in memoria condivisa. In questo caso un singolo programma genera più thread che operano sullo stesso spazio di memoria condiviso. Questo modello è tipico dei sistemi multicore e lo standard più diffuso su CPU è \textbf{OpenMP}.
+    
+    \item[Message-passing] è un modello nel quale più processi distinti comunicano tra loro scambiandosi messaggi. Questo approccio è naturale nei sistemi a memoria distribuita, dove ogni processo possiede una propria memoria locale e la cooperazione avviene tramite comunicazione esplicita. Lo standard di riferimento in questo ambito è \textbf{MPI} (\emph{Message Passing Interface}).
+    
+    \item[Hybrid] combina i due modelli precedenti: più processi comunicano tramite messaggi e, all'interno di ciascun processo, sono presenti più thread. Questo modello è molto comune nei sistemi HPC moderni, poiché consente di sfruttare contemporaneamente il parallelismo interno ai nodi e quello tra nodi diversi.
+\end{description}
