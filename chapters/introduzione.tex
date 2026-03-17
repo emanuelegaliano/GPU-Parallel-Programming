@@ -357,14 +357,7 @@ e per farlo devono sfruttare software e hardware migliori.
 \paragraph{Esempio: software migliore.}
 Un esempio storico di ottimizzazione software molto noto nel contesto dei videogiochi è l'algoritmo per il calcolo rapido dell'inversa della radice quadrata, utilizzato per velocizzare operazioni molto frequenti nella grafica 3D, come la normalizzazione dei vettori.
 
-\begin{lstlisting}[language=C,
-basicstyle=\ttfamily\small,
-keywordstyle=\color{green!50!black}\bfseries,
-commentstyle=\color{cyan!60!black}\itshape,
-stringstyle=\color{orange!70!black},
-identifierstyle=\color{black},
-numbers=none,
-showstringspaces=false]
+\begin{code}[caption={Implementazione approssimata della radice quadrata inversa},label={lst:rsqrt}]
 float rsqrt(float x)
 {
     float h = x/2;
@@ -373,7 +366,7 @@ float rsqrt(float x)
     x = *(float*)&i;
     return x*(1.5f - h*x*x); /* newton */
 }
-\end{lstlisting}
+\end{code}
 
 Questo codice implementa una stima rapida di $1/\sqrt{x}$. 
 L'idea è ottenere una prima approssimazione tramite una manipolazione diretta della rappresentazione binaria del numero floating-point e poi migliorarla con un'iterazione del metodo di Newton. L'efficienza di questo approccio deriva dal fatto che evita il calcolo diretto della radice quadrata, che storicamente era molto più costoso dal punto di vista computazionale. 
