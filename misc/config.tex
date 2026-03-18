@@ -1,0 +1,21 @@
+% Pacchetti necessari
+\usepackage{xcolor}
+\usepackage{listings}
+
+% Stile comune per tutti i listing
+\lstdefinestyle{codeStyle}{
+    language=C,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{green!50!black}\bfseries,
+    commentstyle=\color{cyan!60!black}\itshape,
+    stringstyle=\color{orange!70!black},
+    identifierstyle=\color{black},
+    numbers=none,
+    showstringspaces=false,
+    captionpos=b
+}
+
+% Nuovo ambiente "code"
+\lstnewenvironment{code}[1][]%
+{\lstset{style=codeStyle,#1}}%
+{}
