@@ -163,3 +163,193 @@ Questo modello offre una maggiore portabilità, in quanto lo stesso codice devic
 D'altra parte, questa flessibilità comporta un aumento della complessità: il codice da gestire è maggiore e la separazione tra host e device rende meno immediata la condivisione dei tipi di dato, che devono quindi essere definiti con particolare attenzione, privilegiando strutture semplici e compatibili tra i due ambienti.
 
 \section{Stream Computing}
+Lo stream computing è un paradigma di programmazione che si basa sull'elaborazione di flussi di dati in tempo reale. In questo modello, i dati vengono elaborati in modo continuo e parallelo, consentendo di ottenere prestazioni elevate e bassa latenza.
+
+\subsection{Hardware e controller}
+Le GPU sono \textbf{progettate} per lo stream computing. Una singola compute unit può gestire centinaia di work-item che eseugono lo stesso kernel su più dati in parallelo. La memoria globale, inoltre, ha un'ampia banda passante ma anche alta latenza, per questo motivo si devono usare dei pattern di accesso ottimali per massimizzare le prestazioni. Le GPU sono anche asincrone rispetto alla CPU, il che significa che è possibile eseguire più kernel in parallelo e sovrapporre l'esecuzione dei kernel con i trasferimenti di dati tra host e device.
+
+Il controller di una GPU è responsabile della gestione dell'esecuzione dei kernel e della comunicazione tra host e device. Il controller gestisce la coda dei kernel da eseguire, assegna i work-item alle compute unit e gestisce i trasferimenti di dati tra host e device. Generalmente è un dispositivo ad \textbf{alta latenza} e questo influenza le strutture dati utilizzabile che devono essere efficienti da accedere, ha però un'\textbf{alta banda passante} che consente di trasferire grandi quantità di dati in parallelo.
+
+\subsection{SPMD, SIMD e SIMT}
+
+Nel contesto del calcolo parallelo su GPU, è importante distinguere tra diversi modelli di esecuzione che descrivono come le operazioni vengono applicate ai dati. I paradigmi più rilevanti sono \emph{SIMD}, \emph{SPMD} e \emph{SIMT}, che, pur essendo correlati, rappresentano livelli di astrazione differenti.
+\begin{description}
+\item[SIMD] Il paradigma \emph{Single Instruction Multiple Data} (SIMD) è tipico delle CPU moderne. In questo modello, una singola istruzione viene applicata simultaneamente a più dati organizzati in vettori. Il programmatore deve esplicitamente utilizzare tipi vettoriali (ad esempio \texttt{float4}, \texttt{float8}, ecc.) e scrivere codice che sfrutti direttamente la larghezza delle unità SIMD.
+
+Questo approccio richiede una certa conoscenza dell'hardware sottostante: per sfruttare pienamente le prestazioni, è necessario adattare il codice alla larghezza dei registri vettoriali (ad esempio SSE, AVX, AVX2). Di conseguenza, il codice risulta meno portabile e più difficile da mantenere.
+
+\item[SPMD] Il paradigma \emph{Single Program Multiple Data} (SPMD) rappresenta un modello di programmazione più astratto. In questo caso, il programmatore scrive un singolo programma (il kernel), che viene eseguito molte volte in parallelo su dati diversi. Ogni istanza di esecuzione (work-item) esegue lo stesso codice, ma opera su porzioni differenti dei dati.
+
+Questo modello è particolarmente adatto alla programmazione su GPU, in quanto consente di esprimere facilmente il parallelismo senza preoccuparsi direttamente della gestione delle unità vettoriali.
+
+\item[SIMT] Dal punto di vista hardware, le GPU implementano un modello chiamato \emph{Single Instruction Multiple Threads} (SIMT), che può essere visto come una realizzazione efficiente del modello SPMD. Il programmatore scrive codice come se ogni work-item fosse indipendente, ma l'hardware esegue gruppi di work-item (chiamati \emph{warp} in NVIDIA o \emph{wavefront} in AMD) in maniera sincronizzata, condividendo lo stesso flusso di istruzioni.
+
+Questo significa che, anche se il codice sembra scalare (operare su singoli dati), viene in realtà eseguito in modo simile al SIMD, ma con una gestione trasparente da parte dell'hardware. Tuttavia, il controllo di flusso è limitato: se i thread all'interno dello stesso gruppo seguono percorsi diversi (branch divergenti), le istruzioni vengono serializzate, con una perdita di prestazioni.
+\end{description}
+
+\paragraph{Esempio}
+La differenza tra SIMD e SPMD/SIMT può essere illustrata con un semplice esempio di somma tra vettori.
+
+Nel caso SIMD (tipico su CPU), il programmatore lavora esplicitamente su vettori:
+\begin{code}
+float4 a, b, c;
+a = /* load vector */;
+b = /* load vector */;
+c = a + b;
+\end{code}
+
+Nel caso SPMD/SIMT (tipico su GPU), il programmatore scrive invece codice scalare, che verrà eseguito in parallelo su molti elementi:
+\begin{code}
+float a, b, c;
+a = /* load scalar */;
+b = /* load scalar */;
+c = a + b;
+\end{code}
+
+In questo secondo caso, è l'hardware della GPU a replicare automaticamente l'esecuzione su molti dati e a distribuirla tra le unità di calcolo disponibili.
+
+\subsection{Wide cores}
+Le GPU sono progettate con un gran numero di core, ma ciascun core è relativamente semplice rispetto a quelli di una CPU. Questo approccio architetturale privilegia il throughput complessivo rispetto alla complessità del singolo core, rendendo le GPU particolarmente efficienti per carichi di lavoro altamente paralleli. Più precisamente, un multiprocessore della GPU (Compute Unit o Streaming Multiprocessor) contiene numerosi \emph{processing elements} (PE), che possono essere visti come unità di calcolo elementari. Tuttavia, questi elementi non operano in modo completamente indipendente: essi eseguono lo stesso flusso di istruzioni in maniera coordinata, secondo un modello simile al SIMD, ma con una gestione demandata all'hardware.
+
+Questa organizzazione introduce alcune limitazioni sul controllo di flusso. In particolare, le GPU sono ottimizzate per schemi di esecuzione regolari, dove tutti i work-item seguono lo stesso percorso. Costrutti complessi come branching irregolare o ricorsione sono poco efficienti o addirittura non supportati. Per gestire le divergenze, l'hardware utilizza tecniche come la \emph{predication} e il \emph{lane masking}, che permettono di eseguire comunque le istruzioni, ma disabilitando selettivamente alcuni work-item, con un possibile degrado delle prestazioni.
+
+Un aspetto fondamentale è che i work-item non vengono eseguiti singolarmente, ma in gruppi a dimensione fissa. Questi gruppi sono chiamati \emph{warp} nell'architettura NVIDIA e \emph{wavefront} in quella AMD, e rappresentano la larghezza effettiva del parallelismo hardware (SIMT width). I work-item all'interno dello stesso gruppo vengono eseguiti in \emph{lock-step}, ovvero condividono lo stesso contatore di programma e avanzano insieme nell'esecuzione.
+
+\subsection{Strutture dati ideali}
+L'efficienza di un programma GPGPU dipende in maniera significativa da come i dati sono organizzati in memoria. A differenza delle CPU, dove il costo dell'accesso alla memoria è in parte nascosto da cache sofisticate, nelle GPU è fondamentale strutturare i dati in modo da sfruttare al meglio la banda disponibile.
+
+\paragraph{Tipologie di dati.}
+Un primo aspetto riguarda la scelta dei tipi di dato. Le GPU sono ottimizzate per operare su dati di dimensione ben definita, tipicamente 32, 64 o 128 bit. Per questo motivo, è spesso conveniente utilizzare tipi vettoriali (come \texttt{float2}, \texttt{float4}, ecc.), che permettono di allineare meglio i dati e sfruttare in modo più efficiente le operazioni di lettura e scrittura.
+
+\paragraph{Layout in memoria.}
+Un secondo aspetto fondamentale è il layout in memoria. I dati dovrebbero essere disposti in modo contiguo e correttamente allineato: in particolare, l'indirizzo di un dato dovrebbe essere un multiplo della sua dimensione. Ad esempio, un valore \texttt{float} (4 byte) viene letto in modo efficiente se il suo indirizzo è multiplo di 4. Un accesso non allineato può richiedere più transazioni di memoria, con un conseguente peggioramento delle prestazioni.
+
+\paragraph{Accessi coalescenti.}
+Infine, è importante considerare che gli accessi alla memoria non avvengono a livello di singolo work-item, ma a livello di gruppi di esecuzione (warp o wavefront). I work-item all'interno dello stesso gruppo eseguono la stessa istruzione in parallelo e, idealmente, accedono a posizioni contigue di memoria. In questo caso, il controller di memoria può soddisfare tutte le richieste con una singola transazione, massimizzando la banda passante. Al contrario, accessi irregolari o non contigui portano a un aumento del numero di transazioni e quindi a una riduzione delle prestazioni.
+
+\subsubsection*{Esempi di accesso alla memoria}
+Un errore comune consiste nell’utilizzare strutture dati che sono naturali dal punto di vista logico, ma inefficienti dal punto di vista dell’accesso alla memoria. Consideriamo ad esempio una simulazione di particelle:
+
+\begin{code}
+typedef struct particle {
+    float3 pos;
+    float3 vel;
+} particle_t;
+
+kernel void iteration(global particle_t *particles)
+{
+    int workitem = get_global_id(0);
+    float3 pos = particles[workitem].pos;
+    float3 vel = particles[workitem].vel;
+    /* do stuff */
+}
+\end{code}
+
+In questo caso, ogni work-item accede ai campi \texttt{pos} e \texttt{vel} della propria particella. Tuttavia, i dati in memoria sono interleavati (Array of Structures), e quindi i work-item di uno stesso warp non accedono a locazioni contigue per ciascun campo. Questo porta a accessi non coalescenti e a un aumento del numero di transazioni di memoria.
+
+\paragraph{Caso inefficiente (Array of Structures)}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{images/aos_bad.png}
+    \caption{Accesso inefficiente con layout Array of Structures: i campi \texttt{pos} e \texttt{vel} sono interleavati, causando accessi non coalescenti e multiple transazioni di memoria per warp.}
+    \label{fig:aos_bad}
+\end{figure}
+
+Nel caso mostrato, i work-item accedono a campi distribuiti in memoria in modo non contiguo. Il controller di memoria non può aggregare le richieste e deve effettuare più transazioni, con conseguente perdita di prestazioni.
+
+\paragraph{Caso intermedio (allineamento con float4)}
+Un miglioramento consiste nell’utilizzare tipi allineati, ad esempio:
+
+\begin{code}
+typedef struct particle {
+    float4 pos;
+    float4 vel;
+} particle_t;
+\end{code}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{images/aos_aligned.png}
+    \caption{Allineamento tramite \texttt{float4}: i dati sono meglio allineati e possono essere caricati con meno transazioni, ma il layout rimane di tipo AoS e non è ottimale.}
+    \label{fig:aos_aligned}
+\end{figure}
+
+In questo modo, gli accessi sono più regolari e meglio allineati. Tuttavia, i dati restano organizzati come array di strutture, quindi non si ottiene ancora il massimo livello di efficienza.
+
+\paragraph{Caso efficiente (Structure of Arrays)}
+L’approccio più efficiente consiste nel separare i dati in più array (Structure of Arrays):
+
+\begin{code}
+kernel void iteration(
+    global float4 * restrict posArray,
+    global float4 * restrict velArray)
+{
+    int workitem = get_global_id(0);
+    float4 pos = posArray[workitem];
+    float4 vel = velArray[workitem];
+    /* do stuff */
+}
+\end{code}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{images/soa_good.png}
+    \caption{Layout Structure of Arrays: i work-item accedono a dati contigui, permettendo accessi coalescenti e riducendo il numero di transazioni di memoria.}
+    \label{fig:soa_good}
+\end{figure}
+
+
+In questo caso, i work-item di uno stesso warp accedono a elementi contigui degli array \texttt{posArray} e \texttt{velArray}. Il controller di memoria può quindi servire tutte le richieste con un numero minimo di transazioni (tipicamente una per array), massimizzando la banda passante.
+
+\section{CUDA vs OpenCL}
+
+CUDA e OpenCL rappresentano due approcci differenti alla programmazione su GPU. Pur condividendo molti concetti di base (kernel, memoria device, esecuzione parallela), si differenziano sia per il modello di programmazione lato host sia per il linguaggio utilizzato lato device.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Categoria} & \textbf{CUDA} & \textbf{OpenCL} \\
+\midrule
+
+\multicolumn{3}{l}{\textbf{Host API}} \\
+\midrule
+Supporto hardware & Solo GPU NVIDIA & Multi-vendor (CPU, GPU, FPGA) \\
+Modello sorgente & Single-source & Separate-source \\
+Compilazione kernel & Compile-time & Runtime (driver) \\
+Gestione device & Implicita & Esplicita (platform, device, context) \\
+Gestione code & Implicita & Esplicita (command queue) \\
+Memoria device & Puntatori diretti & Buffer/oggetti astratti \\
+Lancio kernel & Grid/block & NDRange (work-item/work-group) \\
+
+\midrule
+\multicolumn{3}{l}{\textbf{Device Language}} \\
+\midrule
+Linguaggio & C++ esteso & OpenCL C \\
+Libreria standard & Limitata & Completa (built-in) \\
+Swizzling vettori & Non supportato & Supportato (\texttt{f.xy}, ecc.) \\
+Tipi vettoriali & Supportati & Supportati \\
+Accesso agli indici & Manuale (\texttt{threadIdx}) & Built-in (\texttt{get\_global\_id}) \\
+
+\bottomrule
+\end{tabular}
+\caption{Confronto tra CUDA e OpenCL.}
+\label{tab:cuda_opencl}
+\end{table}
+
+\subsection{Differenze lato host}
+
+Dal punto di vista dell’API host, CUDA è una piattaforma proprietaria sviluppata da NVIDIA e progettata per sfruttare al massimo le caratteristiche delle GPU di questo produttore. Questo si traduce in un modello più semplice e diretto: molte operazioni, come la gestione dei device e delle code di esecuzione, sono gestite implicitamente dal runtime. Inoltre, quando si alloca memoria sul device, viene restituito direttamente un puntatore utilizzabile nel codice CUDA.
+
+OpenCL, al contrario, è uno standard aperto pensato per sistemi eterogenei. Questo comporta una maggiore flessibilità, ma anche una maggiore complessità. Il programmatore deve esplicitamente gestire piattaforme, device e code di esecuzione. Inoltre, la memoria allocata sul device non è accessibile tramite puntatori diretti, ma tramite oggetti astratti (buffer), che vengono gestiti attraverso l’API.
+
+Un’altra differenza riguarda l’organizzazione del codice: CUDA adotta un modello \emph{single-source}, mentre OpenCL utilizza un approccio \emph{separate-source}, in cui i kernel vengono compilati a runtime.
+
+\subsection{Differenze lato device}
+
+Per quanto riguarda il linguaggio device, CUDA utilizza un’estensione del C++, mentre OpenCL definisce un proprio linguaggio basato sul C.
+
+Nel caso di CUDA, il linguaggio è fortemente integrato con il modello di esecuzione, ma presenta alcune limitazioni: ad esempio, non esiste una vera libreria standard completa e non sono supportate alcune operazioni tipiche dei linguaggi vettoriali, come lo \emph{swizzling}. Inoltre, l’indice globale di un thread deve essere calcolato manualmente combinando gli indici di blocco e thread.
+
+OpenCL, invece, fornisce un linguaggio più ricco dal punto di vista delle operazioni vettoriali. Sono disponibili costrutti come lo swizzling (ad esempio \texttt{f.xy}, \texttt{f.wwxx}) e funzioni built-in per ottenere direttamente gli indici dei work-item e dei work-group, semplificando la scrittura del codice parallelo.
