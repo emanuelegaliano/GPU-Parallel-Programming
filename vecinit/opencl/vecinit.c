@@ -94,16 +94,15 @@ int main(int argc, char *argv[])
 		1, wait_list, // numero di eventi nella waiting list, waiting list
 		&read_evt     // evento generato da ReadBuffer
 	);
-
 	ocl_check(err, "read buffer d_vec");
+
+	verify(h_vec, nels);
 
 	/* Benchmarking - Calcolo tempo di esecuzione e banda passante */
 	cl_ulong init_ns = runtime_ns(init_evt);
 	cl_ulong read_ns = runtime_ns(read_evt);
-	printf("init: %.4f ms %.4f GB/s\n", init_ns*1.0e-6, memsize/(double)init_ns);
-	printf("read: %.4f ms %.4f GB/s\n", read_ns*1.0e-6, memsize/(double)read_ns);
-
-	verify(h_vec, nels);
+	printf("init: %.4gms %.4gGB/s\n", init_ns*1.0e-6, memsize/(double)init_ns);
+	printf("read: %.4gms %.4gGB/s\n", read_ns*1.0e-6, memsize/(double)read_ns);
 
 	/* Rilascio eventi e risorse OpenCL */
     clReleaseEvent(init_evt);
@@ -118,4 +117,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
