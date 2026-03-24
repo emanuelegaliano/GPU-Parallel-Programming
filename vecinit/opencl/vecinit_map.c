@@ -48,8 +48,8 @@ int main(int argc, char **argv){
 	cl_program prog = create_program("vecinit.ocl", ctx, d);
 	
 	const size_t memsize = sizeof(int)*nels;
-	cl_int err;
 	
+	cl_int err;
 	/* Allocazione del buffer host da parte del device */
 	cl_mem d_vec = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, memsize, NULL, &err);
 	ocl_check(err, "clCreateBuffer fallito");
@@ -63,14 +63,14 @@ int main(int argc, char **argv){
 	cl_event map_evt;
 	
 	/* Mappatura e restituzione del puntatore al buffer host */
-	cl_int *h_vec = clEnqueueMapBuffer(que,
-									   d_vec,        // buffer device da mappare nello spazio di indirizzamento dell'host
+	cl_int *h_vec = clEnqueueMapBuffer(que,          // coda su cui richiedere il comando
+									   d_vec,        // buffer da cui leggere i dati
 									   CL_TRUE,      // chiamata bloccante
 									   CL_MAP_READ,  // access flag (in questo caso, mappatura in sola lettura)
-									   0,            // offset all'interno del buffer device,
+									   0,            // offset (in byte) all'interno del buffer device,
 									   memsize,      // numero di byte da mappare
 									   1, wait_list, // gestione waiting list
-									   &map_evt,    // evento associato
+									   &map_evt,     // evento associato
 									   &err          // error code associato
 	);
 	ocl_check(err, "clEnqueueMapBuffer fallito");
@@ -94,9 +94,9 @@ int main(int argc, char **argv){
 	cl_ulong init_ns = runtime_ns(init_evt);
 	cl_ulong map_ns = runtime_ns(map_evt);
 	cl_ulong unmap_ns = runtime_ns(unmap_evt);
-	printf("init: %.4f ms %.4f GB/s\n", init_ns*1.0e-6, memsize/(double)init_ns);
-	printf("map: %.4f ms %.4f GB/s\n", map_ns*1.0e-6, memsize/(double)map_ns);
-	printf("unmap: %.4f ms %.4f GB/s\n", unmap_ns*1.0e-6, memsize/(double)unmap_ns);
+	printf("init: %.4gms %.4gGB/s\n", init_ns*1.0e-6, memsize/(double)init_ns);
+	printf("map: %.4gms %.4gGB/s\n", map_ns*1.0e-6, memsize/(double)map_ns);
+	printf("unmap: %.4gms %.4gGB/s\n", unmap_ns*1.0e-6, memsize/(double)unmap_ns);
 
 	/* Rilascio eventi e risorse OpenCL */
     clReleaseEvent(init_evt);
