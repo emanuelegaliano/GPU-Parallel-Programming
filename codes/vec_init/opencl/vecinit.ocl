@@ -1,4 +1,0 @@
-kernel void init(global int* vec) {
-    int i = get_global_id(0);
-    vec[i] = i;
-}
