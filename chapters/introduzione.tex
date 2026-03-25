@@ -59,7 +59,7 @@ $p$ & 2 & 4 & 100 & 200 & 400 & $\infty$ \\
 75\% & 1.60 & 2.29 & 3.88 & 3.94 & 3.97 & 4.00 \\
 99\% & 1.98 & 3.88 & 50.2 & 66.9 & 80.2 & 100 \\
 \end{tabular}
-\caption{Speed-up teorico secondo la legge di Amdahl al variare della frazione parallelizzabile $p$ e del numero di processori. Come si può notare all'aumentare delle unità di calcolo, lo speed-up tende a un limite massimo che dipende dalla frazione di codice sequenziale.}
+\caption{Speed-up teorico secondo la legge di Amdahl al variare della frazione parallelizzabile $p$ e del numero di processori. Come si può notare all'aumentare delle unità di calcolo, lo speed-up tende a un limite massimo che dipende dalla frazione di codice sequenziale.\\Nota: anche nel caso ideale, lo speed up massimo è di 100 volte più veloce.}
 \end{table}
 
 \paragraph{Ottimizzazione della legge di Amdahl.}
@@ -92,7 +92,7 @@ Questo esempio mostra che, per ottenere il miglior miglioramento complessivo, co
 \subsection{Legge di Gustafson}
 La legge di Amdahl si concetra su quanto è possibile massimizzare lo speed-up assumendo che il lavoro sia fisso (strong scaling).
 
-La legge di Gustafson, invece, si concentra su quanto è possibile aumentare la dimensione del lavoro mantenendo costante il tempo di esecuzione (weak scaling).
+La legge di Gustafson, invece, si concentra su quanto è possibile aumentare la dimensione del lavoro mantenendo costante il tempo di esecuzione (weak scaling). Tuttavia, è bene notare che l'aumento della quantità di dati processati non è lineare, ma dipende dall'ordine di complessità dell'algoritmo.
 \begin{quote}
 \textit{Se una frazione $p$ del lavoro può avere uno speed-up di fattore $s$, allora il lavoro totale che può essere eseguito in un tempo costante è dato da:}
 \[
@@ -259,10 +259,10 @@ Questo rende il problema particolarmente adatto al parallelismo data-based, poic
 L'hardware per il calcolo parallelo è progettato per supportare l'esecuzione simultanea di più operazioni. Si può classificare l'hardware parallelo in base a come gestisce le sue risorse di calcolo e, in particolare, di memoria.
 
 \subsection{Shared memory}
-In un'architettura a memoria condivisa, tutte le unità di calcolo accedono alla stessa memoria centrale. Questo permette una comunicazione semplice tra le unità, poiché possono leggere e scrivere direttamente sui dati condivisi. Questo modello ha una comunicazione più semplice e meno latenza in generale, ma può essere limitato dalla contesa per l'accesso alla memoria e dalla scalabilità, poiché tutte le unità competono per le stesse risorse di memoria.
+In un'architettura a memoria condivisa, tutte le unità di calcolo accedono alla stessa memoria centrale. Questo permette una comunicazione semplice tra le unità, poiché possono leggere e scrivere direttamente sui dati condivisi. Questo modello ha una comunicazione più semplice e meno latenza, ma può essere limitato dalla contesa per l'accesso alla memoria e dalla scalabilità, poiché tutte le unità competono per le stesse risorse di memoria.
 
 \subsection{Distributed memory}
-In un'architettura a memoria distribuita, ogni unità di calcolo ha la propria memoria locale e non può accedere direttamente alla memoria delle altre unità. La comunicazione tra le unità avviene attraverso un sistema di messaggistica, in cui i dati devono essere esplicitamente inviati e ricevuti tra le unità. Questo modello è sicuramente più scalabile e può gestire grandi quantità di dati, ma la comunicazione tra le unità è più complessa e può introdurre latenza significativa, soprattutto se i dati devono essere scambiati frequentemente.
+In un'architettura a memoria distribuita, ogni unità di calcolo ha la propria memoria locale e non può accedere direttamente alla memoria delle altre unità. La comunicazione tra le unità avviene attraverso un sistema di messaggistica, in cui i dati devono essere esplicitamente inviati e ricevuti tra le unità. Questo modello è  più scalabile e non può essere soggetto a problemi di concorrenza, ma la comunicazione tra le unità è più complessa e può introdurre latenza significativa, soprattutto se i dati devono essere scambiati frequentemente.
  
 \begin{figure}[htbp]
     \centering
@@ -279,7 +279,7 @@ Un esempio sono i cluster di computer, dove ogni nodo del cluster ha la propria 
 \section{Concorrenza, latenza e banda}
 Esistono misure di prestazioni per i sistemi paralleli che aiutano a comprendere l'efficienza e le limitazioni di un'architettura o di un algoritmo parallelo. Le principali sono:
 \begin{description}
-    \item[Latenza: ] la latenza è il tempo necessario per completare un'operazione o una comunicazione. In un sistema parallelo, la latenza può essere influenzata da fattori come la contesa per le risorse, la comunicazione tra unità di calcolo e la sincronizzazione tra processi. Una bassa latenza è desiderabile per garantire che le operazioni vengano completate rapidamente e che le unità di calcolo non restino inattive in attesa di completare le operazioni.
+    \item[Latenza: ] la latenza è il tempo necessario per completare un'operazione, ovvero quello che intercorre tra la richiesta e la ricezione di un dato. In un sistema parallelo, la latenza può essere influenzata da fattori come la contesa per le risorse, la comunicazione tra unità di calcolo e la sincronizzazione tra processi. Una bassa latenza è desiderabile per garantire che le operazioni vengano completate rapidamente e che le unità di calcolo non restino inattive in attesa di completare le operazioni. La soluzione principale per minimizzare la latenza è limitare il numero di spostamenti di dati tra le varie unità.
     \item[Banda: ] la banda è la quantità di dati che può essere trasferita in un certo periodo di tempo. In un sistema parallelo, la banda è importante per garantire che i dati possano essere scambiati rapidamente tra le unità di calcolo, soprattutto in architetture a memoria distribuita. Una banda elevata è necessaria per evitare colli di bottiglia nella comunicazione e per garantire che le unità di calcolo possano accedere ai dati di cui hanno bisogno senza ritardi significativi.
     \item[Concorrenza: ] la concorrenza si riferisce alla capacità di un sistema di eseguire più operazioni contemporaneamente. In un sistema parallelo, la concorrenza è essenziale per sfruttare a pieno le risorse di calcolo disponibili. Tuttavia, la concorrenza può introdurre complessità nella gestione delle risorse, nella sincronizzazione tra processi e nella risoluzione di conflitti, soprattutto quando più processi accedono a dati condivisi. Per gestire la concorrenza in modo efficace esistono due soluzioni principali:
     \begin{itemize}
@@ -401,8 +401,8 @@ Da qui nasce anche l'idea di utilizzare la GPU non solo per la grafica ma anche 
 \section{GPU moderne}
 Oggi le GPU sono dispositivi estremamente potenti e versatili, utilizzati non solo per la grafica ma anche per una vasta gamma di applicazioni scientifiche, industriali e commerciali. Le GPU moderne sono caratterizzate da un'architettura altamente parallela, si parla di centinaia di multi-processori ognuno equipaggiato con circa 100 \textbf{Processing Unit} (come i CUDA core di NVIDIA), che consentono di eseguire migliaia di thread contemporaneamente. Una processing unit è un'unità di calcolo che esegue operazioni aritmetiche e logiche sui dati, ed è progettata per gestire carichi di lavoro altamente paralleli.
 
-\subsection{GPU e GPU: performance e costi}
-Le GPU e le CPU sono progettate per scopi diversi e presentano caratteristiche architetturali differenti, che is riflettono molto sulle prestazioni finali. Le GPU sono ottimizzate per eseguire un gran numero di operazioni in parallelo, con un'architettura che consente di gestire migliaia di thread contemporaneamente. Le CPU, invece, sono progettate per eseguire operazioni più complesse e meno parallelizzabili, con un numero limitato di core e una maggiore enfasi sulla latenza.
+\subsection{GPU e CPU: performance e costi}
+Le GPU e le CPU sono progettate per scopi diversi e presentano caratteristiche architetturali differenti, che is riflettono molto sulle prestazioni finali. Le GPU sono ottimizzate per eseguire un gran numero di operazioni in parallelo, con un'architettura che consente di gestire migliaia di thread contemporaneamente. Le CPU, invece, sono progettate per eseguire operazioni più complesse e meno parallelizzabili, con un numero limitato di core e una maggiore enfasi sulla latenza. Inoltre, mentre le GPU sono indicate per il parallelismo \emph{task-based}, le CPU sono indicate per il parallelismo \emph{data-based}.
 
 Dalle tabelle riportate in Tabella~\ref{tab:gpu_cpu_performance} si può notare che le GPU offrono un numero significativamente maggiore di unità di elaborazione (MPs) e una maggiore potenza di calcolo in termini di FLOPS rispetto alle CPU.
 Inoltre, le GPU tendono ad avere una banda di memoria molto più elevata rispetto alle CPU, il che è cruciale per gestire i grandi volumi di dati necessari per le applicazioni di calcolo parallelo. Tuttavia, è importante considerare anche i costi associati all'acquisto e alla manutenzione di questi dispositivi, nonché la complessità dell'ecosistema software e la disponibilità di competenze specifiche per sfruttare a pieno le potenzialità delle GPU. 
@@ -441,15 +441,15 @@ Una terza opzione è rappresentata dalle APU (\textbf{Accelerated Processing Uni
 
 La parallelizzazione è il processo di suddivisione di un problema o di un algoritmo seriale in un algoritmo parallelo. Ipotizziamo due estremi:
 \begin{description}
-    \item[Un algoritmo intrinsecamente seriale] è un algoritmo che non può essere parallelizzato, poiché ogni operazione dipende, per esempio, strettamente dai risultati delle operazioni precedenti. In questo caso, l'unico modo per eseguire l'algoritmo è in modalità sequenziale, e lo speed-up ottenibile con il calcolo parallelo è limitato. Tuttavia un modo per parallelizzare un algoritmo seriale è quello di fare parallelismo \emph{data-based}, ovvero eseguire in parallelo operazioni simili su dati diversi, anche se l'algoritmo stesso non è parallelizzabile.
+    \item[Un algoritmo intrinsecamente seriale] è un algoritmo che non può essere parallelizzato, poiché vi è una dipendenza tra le operazioni che rende impossibile eseguirle in contemporanea (ad esempio, un'operazione dipende dai risultati delle operazioni precedenti). In questo caso, l'unico modo per eseguire l'algoritmo è in modalità sequenziale, e lo speed-up ottenibile con il calcolo parallelo è limitato. Tuttavia un modo per parallelizzare un algoritmo seriale è quello di fare parallelismo \emph{data-based}, ovvero eseguire in parallelo operazioni simili su dati diversi, anche se l'algoritmo stesso non è parallelizzabile.
     \item[Un algoritmo intrinsecamente parallelo] è un algoritmo che può essere suddiviso in parti indipendenti che possono essere eseguite contemporaneamente. In questo caso, è possibile ottenere uno speed-up significativo utilizzando più unità di calcolo, poiché le operazioni possono essere eseguite in parallelo senza dipendenze.
 \end{description}
 
-\subsection{Algoritmi con parallelismo parziale}
+\subsection{Algoritmi apparentemente seriali}
 
-Esistono però vie di mezzo, ovvero algoritmi che non sono intrinsecamente seriali ma che presentano una certa quantità di parallelismo. Alcuni esempio sono:
+Esistono però vie di mezzo, ovvero algoritmi che non sono intrinsecamente seriali ma che possono essere parallelizzati se interpretati in maniera differente. Alcuni esempio sono:
 \begin{itemize}
-    \item Riduzione: operazioni che combinano più elementi in un unico risultato, come la somma di un array o il prodotto di matrici. Questi algoritmi possono essere parallelizzati suddividendo i dati in blocchi e combinando i risultati parziali.
+    \item Riduzione: operazioni che combinano più elementi in un unico risultato, come la somma di un array o il prodotto di matrici. Questi algoritmi possono essere parallelizzati suddividendo i dati in blocchi e combinando i risultati parziali. Tuttavia, la parallelizzazione ha un requisito: è necessario (e sufficiente) che l’operazione sia associativa.
     \item Scan: operazioni che producono un array di risultati parziali, come la somma cumulativa o il prefisso di un array. Questi algoritmi possono essere parallelizzati utilizzando tecniche come il \emph{divide and conquer} per suddividere i dati e combinare i risultati.
     \item Algoritmi di ordinamento: algoritmi come il merge sort o il quicksort possono essere parallelizzati suddividendo l'array in parti più piccole e ordinando ciascuna parte in parallelo, per poi combinare i risultati.
 \end{itemize}
