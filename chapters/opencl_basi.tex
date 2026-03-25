@@ -277,7 +277,7 @@ Generalmente, per ottenere trasferimenti efficienti tra host e device, il runtim
 
 Il problema nasce dal fatto che la memoria dell’host è normalmente gestita dal sistema operativo e può essere soggetta a operazioni come lo swap o la rilocazione delle pagine. Se durante un trasferimento DMA il sistema operativo sposta o modifica quella regione di memoria, si possono verificare problemi di coerenza dei dati o addirittura errori.
 
-Per questo motivo è necessario garantire che la memoria coinvolta nel trasferimento rimanga stabile per tutta la durata dell’operazione. Questo si ottiene tramite il \emph{pinning}, ovvero bloccando (page-locking) le pagine di memoria dell’host in modo che non possano essere spostate dal sistema operativo.
+Per questo motivo è necessario garantire che la memoria coinvolta nel trasferimento rimanga stabile per tutta la durata dell’operazione. Questo si ottiene tramite il \emph{pinning}, ovvero bloccando (page-locking) le pagine di memoria dell’host in modo che non possano essere spostate dal sistema operativo. Questo viene fatto grazie alla flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR} durante la creazione del buffer, che indica al runtime di allocare la memoria in modo compatibile con il pinning.
 
 Inoltre, è importante che l’host non acceda alla memoria mappata finché l’operazione asincrona non è completata. Questo può essere garantito utilizzando eventi OpenCL oppure operazioni bloccanti, evitando così condizioni di race e inconsistenze nei dati.
 
