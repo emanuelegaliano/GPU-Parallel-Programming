@@ -1,0 +1,145 @@
+\chapter{Ottimizzazione e gestione dell’esecuzione in OpenCL}\label{sec:opencl_basi_mapping}
+
+\section{Mapping al posto di read}
+Nella versione precedente, dopo l’esecuzione del kernel, i dati prodotti sul device venivano trasferiti all’host tramite una copia esplicita. Questo richiedeva due operazioni distinte:
+\begin{itemize}
+    \item allocare un vettore lato host con \texttt{malloc};
+    \item copiare i dati dal device con \texttt{clEnqueueReadBuffer}.
+\end{itemize}
+\noindent
+Questo approccio è semplice e immediato, ma introduce un overhead dovuto sia alla gestione separata della memoria sia alla copia esplicita dei dati.
+
+L’idea del mapping è quella di evitare questa copia esplicita e permettere all’host di accedere direttamente al buffer OpenCL. In pratica:
+\begin{itemize}
+    \item il buffer viene allocato in modo compatibile con l’accesso da host;
+    \item l’host ottiene un puntatore al buffer tramite \texttt{clEnqueueMapBuffer};
+    \item una volta terminato l’utilizzo, il buffer viene rilasciato con \texttt{clEnqueueUnmapMemObject}.
+\end{itemize}
+
+In questo modo si semplifica la fase finale di recupero dei dati e, in molti casi, si riduce il costo complessivo del trasferimento.
+
+\section{Modifica nella creazione del buffer}
+
+La prima modifica riguarda la creazione del buffer. Nella versione originale si aveva:
+
+\begin{code}[caption={Creazione del buffer senza mapping}, label={code:buffer_no_map}]
+cl_mem d_vec = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, memsize, NULL, &err);
+\end{code}
+
+Nella versione ottimizzata si utilizza invece:
+
+\begin{code}[caption={Creazione del buffer con mapping}, label={code:buffer_map}]
+cl_mem d_vec = clCreateBuffer(
+  ctx,
+  CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR,
+  memsize,
+  NULL,
+  &err
+);
+\end{code}
+
+Il flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR} indica al runtime di allocare il buffer in una regione di memoria adatta a essere mappata dall’host. Non si tratta quindi di una semplice allocazione generica sul device, ma di una scelta che prepara il buffer a una successiva fase di accesso diretto dal lato host.
+
+\section{Recupero dei dati con il mapping}
+
+La seconda modifica riguarda il recupero dei dati. Nella versione precedente si utilizzava \texttt{clEnqueueReadBuffer}, mentre nella nuova versione si ricorre al mapping del buffer:
+
+\begin{code}[caption={Mapping del buffer}, label={code:buffer_map_read}]
+cl_event wait_list[1] = { init_evt };
+cl_event read_evt;
+
+cl_int *h_vec = clEnqueueMapBuffer(
+  que,
+  d_vec,
+  CL_TRUE,
+  CL_MAP_READ,
+  0, memsize,
+  1, wait_list,
+  &read_evt,
+  &err
+);
+ocl_check(err, "read buffer d_vec");
+\end{code}
+
+Questa funzione restituisce direttamente un puntatore, in questo caso \texttt{h\_vec}, che può essere utilizzato dal codice host per leggere il contenuto del buffer. Dal punto di vista logico, non si sta più chiedendo al runtime di copiare i dati in un vettore separato, ma di rendere accessibile il contenuto del buffer stesso.
+
+\section{Accesso ai dati}
+
+Una volta ottenuto il puntatore, i dati possono essere usati direttamente:
+
+\begin{code}[caption={Accesso diretto ai dati mappati}, label={code:access_map}]
+verify(h_vec, n);
+\end{code}
+
+\noindent
+Non è quindi più necessario effettuare una copia esplicita dei dati in una struttura allocata manualmente sull’host. Il risultato è un codice più lineare e, in generale, un percorso di trasferimento più efficiente.
+
+\paragraph{Problemi di swap e pinning.}
+Per ottenere trasferimenti efficienti tra host e device, il runtime OpenCL sfrutta normalmente operazioni di DMA (\emph{Direct Memory Access}), che permettono di copiare i dati senza coinvolgere direttamente la CPU. Questo tipo di trasferimento è vantaggioso perché riduce il lavoro del processore, ma introduce anche alcune problematiche legate alla gestione della memoria host.
+
+La memoria dell’host, infatti, è controllata dal sistema operativo e può essere soggetta a operazioni come swap o rilocazione delle pagine. Se durante un trasferimento DMA quella regione di memoria viene spostata o modificata dal sistema operativo, si possono verificare inconsistenze nei dati o errori nel trasferimento.
+
+Per evitare questo problema, è necessario garantire che la memoria coinvolta rimanga stabile per tutta la durata dell’operazione. Questo si ottiene tramite il \emph{pinning}, cioè il blocco delle pagine di memoria host in modo che non possano essere spostate. In OpenCL questo comportamento è favorito dall’uso della flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR}, che consente al runtime di predisporre una memoria compatibile con questo tipo di gestione.
+
+Inoltre, bisogna ricordare che l’host non deve accedere alla memoria mappata prima che l’operazione sia stata completata. Questo vincolo può essere rispettato utilizzando eventi OpenCL oppure operazioni bloccanti, così da evitare condizioni di race o accessi incoerenti ai dati.
+
+\section{Fase di unmapping}
+
+Dopo aver utilizzato i dati, è necessario rilasciare il mapping:
+
+\begin{code}[caption={Unmapping del buffer}, label={code:unmap}]
+cl_event unmap_evt;
+err = clEnqueueUnmapMemObject(que, d_vec, h_vec, 0, NULL, &unmap_evt);
+ocl_check(err, "unmap buffer d_vec");
+\end{code}
+
+Questa operazione segnala al runtime che l’host ha terminato di accedere al buffer. Da questo momento il buffer torna a essere gestito normalmente da OpenCL e non deve più essere usato tramite il puntatore ottenuto con il mapping.
+
+Nel complesso, l’uso del mapping rappresenta una piccola ma importante ottimizzazione: il flusso dei dati tra device e host diventa più diretto, si elimina una copia esplicita e si sfrutta in modo più efficiente la memoria resa disponibile dal runtime.
+
+\section{Numeri della griglia di lancio}
+Generalmente il numero di work-item per blocco (local size) e il numero di blocchi (global size) sono scelti dal driver in modo da massimizzare l’occupazione del device, tenendo conto delle limitazioni hardware. Esistono però casi in cui è necessario specificare esplicitamente questi parametri, per aumentare per esempio le prestazioni.
+
+\subsection{Global size ideale}
+La global size ideale è quella che permette di sfruttare al meglio le risorse del device, evitando sia di avere troppi work-item inattivi (sotto-occupazione) sia di avere un numero eccessivo di work-item che competono per le stesse risorse (sovraccarico). Questo si ottiene scegliendo una global size che sia un multiplo del numero di work-item per blocco, in modo da garantire che ogni blocco sia completamente occupato.
+
+\paragraph{Esempio.}
+Supponiamo di avere un device che supporta 256 work-item per blocco. Se si sceglie una global size di 1024, si avranno 4 blocchi completamente occupati, il che è ideale. Se invece si sceglie una global size di 1000, si avranno 3 blocchi completamente occupati e un quarto blocco con solo 232 work-item, il che porta a una sotto-occupazione e a prestazioni inferiori.
+
+\subsection{Numeri primi}
+Un caso particolare è quello in cui il numero di elementi da processare è un numero primo. In questo caso, se si sceglie una global size pari al numero di elementi, si avrà un solo blocco con un solo work-item, il che non sfrutta affatto la potenza del device. In questi casi è necessario scegliere una global size maggiore, magari arrotondando al multiplo più vicino di un numero di work-item per blocco che sia efficiente (ad esempio 256 o 512).
+
+\begin{code}[caption={Scelta della global size per un numero primo di elementi}, label={code:global_size_prime}]
+    const size_t gws[1] = { round_mul_up(nels, wg_mul) };
+\end{code}
+
+Questo è un esempio di come si può arrotondare la global size al multiplo più vicino di \texttt{wg\_mul}, che rappresenta il numero di work-item per blocco. In questo modo si garantisce che ogni blocco sia completamente occupato, anche se il numero di elementi è un numero primo.
+
+\section{Aliasing}
+L'aliasing è una situazione in cui due o più puntatori fanno riferimento alla stessa area di memoria. In OpenCL, l'aliasing può portare a problemi di coerenza dei dati e a prestazioni inferiori, poiché il runtime potrebbe dover inserire operazioni di sincronizzazione o di copia per garantire la correttezza del programma.
+
+Per evitare problemi di aliasing, è importante progettare i kernel in modo che ogni work-item acceda a una porzione distinta della memoria. Inoltre è importante pensare che il compilatore debba essere libero di fare ottimizzazioni, se siamo sicuri che non si verifichi l'aliasing. Un modo per farlo è utilizzare la keyword \texttt{restrict} nei puntatori, che indica al compilatore che i dati a cui si accede non sono condivisi con altri puntatori. In questo modo il compilatore può applicare ottimizzazioni più aggressive, migliorando le prestazioni del kernel.
+
+\paragraph{Esempio: assegnazione per $\mathbf{n}$ volte di un valore a una zona di memoria.}
+Ipotizzando che abbiamo un kernel (molto stupido) che assegni un valore ad una zona di memoria, come un elemento di array, per n volte. Quessto kernel potrebbe essere scritto in questo modo:
+\begin{code}[caption={Kernel con potenziale aliasing}, label={code:kernel_aliasing}]
+kernel void assign_value(global float *data, float value, int n) {
+    int gid = get_global_id(0);
+    for (int i = 0; i < n; i++) {
+        data[gid] = value;
+    }
+}
+\end{code}
+
+Questo è un codice semplice e si può notare che il for all'interno fa la stessa operazione ripetuta $n$ volte. Tuttavia il compilatore, in questo caso, non può assumere che le operazioni siano uguali in quanto potrebbe esserci un aliasing, ovvero che il puntatore \texttt{data} possa essere condiviso con altri puntatori. Di conseguenza, il compilatore potrebbe decidere di non ottimizzare il ciclo, mantenendo tutte le iterazioni del for.
+
+Se invece si utilizza la keyword \texttt{restrict} per indicare che il puntatore non è condiviso, il kernel potrebbe essere riscritto in questo modo:
+\begin{code}[caption={Kernel con \texttt{restrict} per evitare aliasing}, label={code:kernel_no_aliasing}]
+kernel void assign_value(global float *restrict data, float value, int n) {
+    int gid = get_global_id(0);
+    for (int i = 0; i < n; i++) {
+        data[gid] = value;
+    }
+}
+\end{code}
+In questo caso, il compilatore può assumere che le operazioni all'interno del ciclo for siano identiche e può quindi ottimizzare il codice, ad esempio eliminando il ciclo e assegnando direttamente il valore a \texttt{data[gid]} una sola volta. Questo può portare a un miglioramento significativo delle prestazioni, soprattutto se $n$ è grande.
