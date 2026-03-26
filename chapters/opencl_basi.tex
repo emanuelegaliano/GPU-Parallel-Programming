@@ -25,7 +25,7 @@ Le varie righe possono essere descritte così:
 
 \section{Creazione del buffer device}\label{sec:opencl_basi_buffer}
 
-Il buffer è una regione di memoria allocata sul dispositivo, che può essere utilizzata per scambiare dati tra il host e il device. Per creare un buffer, è necessario specificare la dimensione del buffer, le opzioni di accesso, il puntatore ai dati (che generalmente è \texttt{NULL} se non si vuole usare un puntatore host) e un puntatore per eventuali errori. Il codice seguente mostra come creare un buffer:
+Il buffer è una regione di memoria allocata sul dispositivo che può essere utilizzata per scambiare dati tra il host e il device. Per creare un buffer, è necessario specificare la dimensione del buffer, le opzioni di accesso, il puntatore ai dati (che generalmente è \texttt{NULL} se non si vuole usare un puntatore host) e un puntatore per un eventuale codice di errore. Il codice seguente mostra come creare un buffer:
 \begin{code}[caption={Creazione di un buffer OpenCL}, label={code:opencl_basi_buffer}]
     const size_t memsize = sizeof(int)*nels;
     cl_int err;
@@ -51,11 +51,11 @@ Le varie righe possono essere descritte così:
         \item \texttt{\&err} è un puntatore a una variabile in cui viene salvato il codice di errore restituito dalla funzione. Se la creazione del buffer ha successo, \texttt{err} assume valore \texttt{CL\_SUCCESS}.
     \end{itemize}
     
-    \item \texttt{ocl\_check(err, "clCreateBuffer fallito")} è una funzione di utilità che verifica il valore di \texttt{err}. Se il codice di errore è diverso da \texttt{CL\_SUCCESS}, viene segnalato l’errore e l’esecuzione del programma viene interrotta.
+    \item \texttt{ocl\_check(err, "clCreateBuffer fallito")} è una funzione di utilità che verifica il valore di \texttt{err}. Se il codice di errore è diverso da \texttt{CL\_SUCCESS}, l’errore viene segnalato e l’esecuzione del programma viene interrotta.
 \end{itemize}
 
 \section{Creazione del kernel}\label{sec:opencl_basi_kernel}
-Il kernel è quella funzione che viene eseguita sul dispositivo. Per creare un kernel, è necessario specificare il nome del kernel e il programma da cui è stato creato. Il codice seguente mostra come creare un kernel:
+Il kernel è la funzione che viene eseguita sul dispositivo. Per creare un kernel, è necessario specificare il nome del kernel e il programma da cui è stato creato. Il codice seguente mostra come creare un kernel:
 \begin{code}[caption={Creazione di un kernel OpenCL}, label={code:opencl_basi_kernel}]
 	const char *kname = "init_k";
 	cl_kernel init_k = clCreateKernel(prog, kname, &err);
@@ -88,7 +88,7 @@ Nella funzione \texttt{init} del sorgente C viene assegnato ad ogni elemento del
   ocl_check(err, "init_k set kernel arg %u", arg_index);
 
   err = clEnqueueNDRangeKernel(que, init_k,
-    1,    /* dimensionalit\`a griglia: nel nostro caso 1D */
+    1,    /* dimensionalita' griglia: nel nostro caso 1D */
     NULL, /* global work offset */
     gws,  /* global work size: quanti elementi totali lanciare */
     NULL, /* local work size: come raggruppare gli elementi */
@@ -139,7 +139,7 @@ Le varie righe possono essere descritte così:
 \end{itemize}
 
 \section{Recupero dei dati}\label{sec:opencl_basi_retrieval}
-Dopo l'esecuzione del kernel, è necessario recuperare i dati dal dispositivo al host. Per fare questo, si utilizza la funzione \texttt{clEnqueueReadBuffer}, che legge i dati da un buffer OpenCL e li copia in una regione di memoria host. Il codice seguente mostra come fare questo:
+Dopo l'esecuzione del kernel, è necessario recuperare i dati dal dispositivo per renderli disponibili sull'host. Per fare questo si utilizza la funzione \texttt{clEnqueueReadBuffer}, che legge i dati da un buffer OpenCL e li copia in una regione di memoria host. Il codice seguente mostra come fare:
 \begin{code}[caption={Recupero dei dati da un buffer OpenCL}, label={code:opencl_basi_readbuffer}]
     int *h_vec = malloc(sizeof(int) * n);
     if (!h_vec) {
@@ -168,13 +168,9 @@ Le varie righe possono essere descritte così:
 \begin{itemize}
     \item \texttt{int *h\_vec = malloc(sizeof(int) * n)} alloca memoria sul lato host per contenere i dati letti dal buffer OpenCL. In particolare, vengono allocati \texttt{n} elementi di tipo \texttt{int}.
     
-    \item Il controllo:
-    \begin{itemize}
-        \item \texttt{if (!h\_vec)} verifica che l’allocazione sia andata a buon fine.
-        \item In caso contrario, viene stampato un messaggio di errore e l’esecuzione del programma viene terminata.
-    \end{itemize}
+    \item \texttt{if (!h\_vec)} è la verifica che l’allocazione sia andata a buon fine. In caso contrario, viene stampato un messaggio di errore e l’esecuzione del programma viene terminata.
     
-    \item \texttt{cl\_event wait\_list[1] = \{ init\_evt \}} è un array di eventi che rappresenta la lista di comandi che devono essere completati prima di eseguire la lettura. In questo caso, si aspetta il completamento del kernel associato all’evento \texttt{init\_evt}.
+    \item \texttt{cl\_event wait\_list[1] = \{ init\_evt \}} è un array di eventi che rappresenta la lista di comandi che devono essere completati prima di poter eseguire la lettura. In questo caso, si aspetta il completamento del kernel associato all’evento \texttt{init\_evt}.
     
     \item \texttt{cl\_event read\_evt} è una variabile che conterrà l’evento associato all’operazione di lettura dal buffer.
     
@@ -199,5 +195,5 @@ Le varie righe possono essere descritte così:
         \item \texttt{\&read\_evt} è un puntatore alla variabile in cui viene salvato l’evento associato all’operazione di lettura.
     \end{itemize}
     
-    \item \texttt{ocl\_check(err, "read buffer d\_vec")} verifica che l’operazione sia andata a buon fine. In caso di errore, viene segnalato e l’esecuzione viene interrotta.
+    \item \texttt{ocl\_check(err, "read buffer d\_vec")} verifica che l’operazione sia andata a buon fine. In caso di errore, esso viene segnalato e l’esecuzione viene interrotta.
 \end{itemize}

@@ -38,7 +38,7 @@ cl_mem d_vec = clCreateBuffer(
 );
 \end{code}
 
-Il flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR} indica al runtime di allocare il buffer in una regione di memoria adatta a essere mappata dall’host. Non si tratta quindi di una semplice allocazione generica sul device, ma di una scelta che prepara il buffer a una successiva fase di accesso diretto dal lato host.
+Il flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR} indica al runtime (la libreria OpenCL) di allocare il buffer in una regione di memoria adatta a essere mappata dall’host. Non si tratta quindi di una semplice allocazione generica sul device, ma di una scelta che prepara il buffer a una successiva fase di accesso diretto dal lato host.
 
 \section{Recupero dei dati con il mapping}
 
@@ -48,16 +48,8 @@ La seconda modifica riguarda il recupero dei dati. Nella versione precedente si 
 cl_event wait_list[1] = { init_evt };
 cl_event read_evt;
 
-cl_int *h_vec = clEnqueueMapBuffer(
-  que,
-  d_vec,
-  CL_TRUE,
-  CL_MAP_READ,
-  0, memsize,
-  1, wait_list,
-  &read_evt,
-  &err
-);
+cl_int *h_vec = clEnqueueMapBuffer(que, d_vec, CL_TRUE,
+                  CL_MAP_READ, 0, memsize, 1, wait_list, &read_evt, &err);
 ocl_check(err, "read buffer d_vec");
 \end{code}
 
@@ -65,14 +57,7 @@ Questa funzione restituisce direttamente un puntatore, in questo caso \texttt{h\
 
 \section{Accesso ai dati}
 
-Una volta ottenuto il puntatore, i dati possono essere usati direttamente:
-
-\begin{code}[caption={Accesso diretto ai dati mappati}, label={code:access_map}]
-verify(h_vec, n);
-\end{code}
-
-\noindent
-Non è quindi più necessario effettuare una copia esplicita dei dati in una struttura allocata manualmente sull’host. Il risultato è un codice più lineare e, in generale, un percorso di trasferimento più efficiente.
+Una volta ottenuto il puntatore, i dati possono essere usati direttamente, quindi non è più necessario effettuare una copia esplicita dei dati in una struttura allocata manualmente sull’host. Il risultato è un codice più lineare e, in generale, un percorso di trasferimento più efficiente.
 
 \paragraph{Problemi di swap e pinning.}
 Per ottenere trasferimenti efficienti tra host e device, il runtime OpenCL sfrutta normalmente operazioni di DMA (\emph{Direct Memory Access}), che permettono di copiare i dati senza coinvolgere direttamente la CPU. Questo tipo di trasferimento è vantaggioso perché riduce il lavoro del processore, ma introduce anche alcune problematiche legate alla gestione della memoria host.
@@ -81,7 +66,7 @@ La memoria dell’host, infatti, è controllata dal sistema operativo e può ess
 
 Per evitare questo problema, è necessario garantire che la memoria coinvolta rimanga stabile per tutta la durata dell’operazione. Questo si ottiene tramite il \emph{pinning}, cioè il blocco delle pagine di memoria host in modo che non possano essere spostate. In OpenCL questo comportamento è favorito dall’uso della flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR}, che consente al runtime di predisporre una memoria compatibile con questo tipo di gestione.
 
-Inoltre, bisogna ricordare che l’host non deve accedere alla memoria mappata prima che l’operazione sia stata completata. Questo vincolo può essere rispettato utilizzando eventi OpenCL oppure operazioni bloccanti, così da evitare condizioni di race o accessi incoerenti ai dati.
+Inoltre, bisogna ricordare che l’host non deve accedere alla memoria mappata prima che l’operazione sia stata completata. Questo vincolo può essere rispettato utilizzando eventi OpenCL oppure operazioni bloccanti, così da evitare race condition o accessi incoerenti ai dati.
 
 \section{Fase di unmapping}
 
@@ -93,12 +78,12 @@ err = clEnqueueUnmapMemObject(que, d_vec, h_vec, 0, NULL, &unmap_evt);
 ocl_check(err, "unmap buffer d_vec");
 \end{code}
 
-Questa operazione segnala al runtime che l’host ha terminato di accedere al buffer. Da questo momento il buffer torna a essere gestito normalmente da OpenCL e non deve più essere usato tramite il puntatore ottenuto con il mapping.
+Questa operazione segnala al runtime che l’host ha terminato di accedere al buffer. Da questo momento in poi, il buffer torna a essere gestito normalmente dalla libreria OpenCL e non deve più essere usato tramite il puntatore ottenuto con il mapping.
 
 Nel complesso, l’uso del mapping rappresenta una piccola ma importante ottimizzazione: il flusso dei dati tra device e host diventa più diretto, si elimina una copia esplicita e si sfrutta in modo più efficiente la memoria resa disponibile dal runtime.
 
 \section{Numeri della griglia di lancio}
-Generalmente il numero di work-item per blocco (local size) e il numero di blocchi (global size) sono scelti dal driver in modo da massimizzare l’occupazione del device, tenendo conto delle limitazioni hardware. Esistono però casi in cui è necessario specificare esplicitamente questi parametri, per aumentare per esempio le prestazioni.
+Generalmente il numero di work-item per blocco (local size) e il numero di blocchi (global size) sono scelti dal driver in modo da massimizzare l’occupazione del device, tenendo conto delle limitazioni hardware. Esistono però casi in cui è necessario specificare esplicitamente questi parametri, ad esempio per aumentare le prestazioni.
 
 \subsection{Global size ideale}
 La global size ideale è quella che permette di sfruttare al meglio le risorse del device, evitando sia di avere troppi work-item inattivi (sotto-occupazione) sia di avere un numero eccessivo di work-item che competono per le stesse risorse (sovraccarico). Questo si ottiene scegliendo una global size che sia un multiplo del numero di work-item per blocco, in modo da garantire che ogni blocco sia completamente occupato.
@@ -109,19 +94,91 @@ Supponiamo di avere un device che supporta 256 work-item per blocco. Se si scegl
 \subsection{Numeri primi}
 Un caso particolare è quello in cui il numero di elementi da processare è un numero primo. In questo caso, se si sceglie una global size pari al numero di elementi, si avrà un solo blocco con un solo work-item, il che non sfrutta affatto la potenza del device. In questi casi è necessario scegliere una global size maggiore, magari arrotondando al multiplo più vicino di un numero di work-item per blocco che sia efficiente (ad esempio 256 o 512).
 
-\begin{code}[caption={Scelta della global size per un numero primo di elementi}, label={code:global_size_prime}]
-    const size_t gws[1] = { round_mul_up(nels, wg_mul) };
+Il codice device va quindi riscritto nel seguente modo:
+\begin{code}[caption={Scelta della preferred global size - codice device}, label={code:preferred_global_size_device}]
+    kernel void init_k(global int *vec, int nels)
+    {
+        int i = get_global_id(0);
+        if (i >= nels) return;
+        vec[i] = i;
+    }
 \end{code}
 
-Questo è un esempio di come si può arrotondare la global size al multiplo più vicino di \texttt{wg\_mul}, che rappresenta il numero di work-item per blocco. In questo modo si garantisce che ogni blocco sia completamente occupato, anche se il numero di elementi è un numero primo.
+Rispetto al codice precedente, passiamo al kernel anche il parametro \texttt{nels} e introduciamo un controllo dell'indice corrente per verificare che non superi il numero effettivo di elementi.
+
+Per quanto riguarda il codice host, modifichiamo il main per calcolare la quantità \texttt{wg\_mul}, che coincide con il numero di cui la global size deve essere multiplo in base all'hardware utilizzato. Il codice è il seguente:
+
+\begin{code}[caption={Scelta della preferred global size - codice host (main)}, label={code:preferred_global_size_host_main}]
+	size_t wg_mul;
+	err = clGetKernelWorkGroupInfo(init_k, d, 
+            CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, sizeof(wg_mul), &wg_mul, NULL);
+	ocl_check(err, "preferred work-group size multiple fallito", kname);
+
+	cl_event init_evt = init(que, init_k, d_vec, nels, wg_mul);
+\end{code}
+
+\subsection*{Descrizione del codice}
+\begin{itemize}
+    \item \texttt{clGetKernelWorkGroupInfo(...)} è la funzione che permette di interrogare il sistema sulle capacità e i limiti di un kernel specifico quando questo viene eseguito su un determinato device. La funzione ritorna un codice di errore che viene poi controllato con la funzione \texttt{ocl\_check}. I parametri sono:
+    \begin{itemize}
+        \item \texttt{init\_k} è il kernel per il quale si vogliono chiedere informazioni.
+        
+        \item \texttt{d} è l'id del device per il quale si vogliono chiedere informazioni.
+        
+        \item \texttt{CL\_KERNEL\_PREFERRED\_WORK\_GROUP\_SIZE\_MULTIPLE} è l'informazione che si vuole ottenere, ovvero il divisore ideale per la dimensione del work group.
+        
+        \item \texttt{sizeof(wg\_mul)} è la dimensione in byte della variabile in cui conservare l'informazione richiesta.
+        
+        \item \texttt{\&wg\_mul} è il puntatore alla variabile in cui memorizzare l'informazione.
+        
+        \item \texttt{NULL} è un puntatore opzionale a una variabile \texttt{size\_t} dove OpenCL scriverebbe il numero di byte effettivamente restituiti. Di solito si passa NULL se si sa già cosa aspettarsi.
+    \end{itemize}
+    
+    \item Rispetto al codice precedente, passiamo alla funzione \texttt{init()} anche i parametri \texttt{nels} e \texttt{wg\_mul}.
+\end{itemize}
+
+La funzione \texttt{init()} all'interno del codice host va invece modificata nel seguente modo:
+\begin{code}[caption={Scelta della preferred global size - codice host (init)}, label={code:preferred_global_size_host_init}]
+    cl_event init(cl_command_queue que, cl_kernel init_k, 
+                    cl_mem vec, cl_int nels, size_t wg_mul)
+    {
+        cl_int err;
+        cl_event init_evt;
+
+        const size_t gws[1] = { round_mul_up(nels, wg_mul) };
+        printf("%d | %zu = %zu\n", nels, wg_mul, gws[0]);
+
+        cl_uint arg_index = 0;
+        err = clSetKernelArg(init_k, arg_index, sizeof(cl_mem), &vec);
+        ocl_check(err, "init_k set kernel arg %u", arg_index);
+        ++arg_index;
+        err = clSetKernelArg(init_k, arg_index, sizeof(nels), &nels);
+        ocl_check(err, "init_k set kernel arg %u", arg_index);
+
+        err = clEnqueueNDRangeKernel(que, init_k, 1, NULL, gws,
+            NULL, 0, NULL, &init_evt);
+
+        ocl_check(err, "enqueue kernel init_k");
+        return init_evt;
+    }
+\end{code}
+
+\subsection*{Descrizione del codice}
+Le modifiche apportate rispetto al codice precedente sono le seguenti:
+\begin{itemize}
+    \item La global work size \texttt{gws} viene calcolata arrotondando il valore di \texttt{nels} in modo da renderlo un multiplo di \texttt{wg\_mul}.
+    \item Passiamo al kernel anche l'argomento \texttt{nels} usando la funzione \texttt{clSetKernelArg()}.
+\end{itemize}
+
+In questo modo si garantisce che ogni blocco sia completamente occupato anche se il numero di elementi è un numero primo.
 
 \section{Aliasing}
 L'aliasing è una situazione in cui due o più puntatori fanno riferimento alla stessa area di memoria. In OpenCL, l'aliasing può portare a problemi di coerenza dei dati e a prestazioni inferiori, poiché il runtime potrebbe dover inserire operazioni di sincronizzazione o di copia per garantire la correttezza del programma.
 
-Per evitare problemi di aliasing, è importante progettare i kernel in modo che ogni work-item acceda a una porzione distinta della memoria. Inoltre è importante pensare che il compilatore debba essere libero di fare ottimizzazioni, se siamo sicuri che non si verifichi l'aliasing. Un modo per farlo è utilizzare la keyword \texttt{restrict} nei puntatori, che indica al compilatore che i dati a cui si accede non sono condivisi con altri puntatori. In questo modo il compilatore può applicare ottimizzazioni più aggressive, migliorando le prestazioni del kernel.
+Per evitare problemi di aliasing, è importante progettare i kernel in modo che ogni work-item acceda a una porzione distinta della memoria. Inoltre, è importante pensare che il compilatore debba essere libero di fare ottimizzazioni con la sicurezza che non si verifichi l'aliasing. Un modo per farlo è utilizzare la keyword \texttt{restrict} nei puntatori per indicare al compilatore che i dati a cui si accede non sono condivisi con altri puntatori. In questo modo il compilatore può applicare ottimizzazioni più aggressive, migliorando le prestazioni del kernel.
 
 \paragraph{Esempio: assegnazione per $\mathbf{n}$ volte di un valore a una zona di memoria.}
-Ipotizzando che abbiamo un kernel (molto stupido) che assegni un valore ad una zona di memoria, come un elemento di array, per n volte. Quessto kernel potrebbe essere scritto in questo modo:
+Ipotizzando di avere il seguente kernel (molto inefficiente) che assegni lo stesso valore ad un elemento di array per n volte:
 \begin{code}[caption={Kernel con potenziale aliasing}, label={code:kernel_aliasing}]
 kernel void assign_value(global float *data, float value, int n) {
     int gid = get_global_id(0);
@@ -131,7 +188,7 @@ kernel void assign_value(global float *data, float value, int n) {
 }
 \end{code}
 
-Questo è un codice semplice e si può notare che il for all'interno fa la stessa operazione ripetuta $n$ volte. Tuttavia il compilatore, in questo caso, non può assumere che le operazioni siano uguali in quanto potrebbe esserci un aliasing, ovvero che il puntatore \texttt{data} possa essere condiviso con altri puntatori. Di conseguenza, il compilatore potrebbe decidere di non ottimizzare il ciclo, mantenendo tutte le iterazioni del for.
+Si può notare che, nonostante il codice esegua la stessa operazione più volte, il compilatore non può comunque assumere che le operazioni siano uguali. Infatti, vi è la possibilità che ci sia un aliasing, ovvero che il puntatore \texttt{data} possa essere condiviso con altri puntatori. Di conseguenza, il compilatore potrebbe decidere di non ottimizzare il ciclo, eseguendo tutte le iterazioni del ciclo for.
 
 Se invece si utilizza la keyword \texttt{restrict} per indicare che il puntatore non è condiviso, il kernel potrebbe essere riscritto in questo modo:
 \begin{code}[caption={Kernel con \texttt{restrict} per evitare aliasing}, label={code:kernel_no_aliasing}]
@@ -142,4 +199,4 @@ kernel void assign_value(global float *restrict data, float value, int n) {
     }
 }
 \end{code}
-In questo caso, il compilatore può assumere che le operazioni all'interno del ciclo for siano identiche e può quindi ottimizzare il codice, ad esempio eliminando il ciclo e assegnando direttamente il valore a \texttt{data[gid]} una sola volta. Questo può portare a un miglioramento significativo delle prestazioni, soprattutto se $n$ è grande.
+In questo caso, il compilatore può assumere che le operazioni all'interno del ciclo for siano identiche e può quindi ottimizzare il codice, ad esempio eliminando il ciclo e inizializzando il valore di \texttt{data[gid]} una sola volta. Questo può portare a un miglioramento significativo delle prestazioni, soprattutto se $n$ è grande.
