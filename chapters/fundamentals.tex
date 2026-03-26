@@ -16,17 +16,19 @@ L'architettura di un programma GPGPU è composta da tre componenti principali:
 \end{figure}
 
 \subsection{Kernel, work-item e work-group}
-Un kernel è un flusso di lavoro che viene eseguita in parallelo su più compute unit della GPU. Ogni istanza di esecuzione del kernel è detta \textbf{work-item} (in CUDA vengono chiamati "thread") e ogni work-item che appartengono allo stesso \textbf{work-group} (un gruppo di work-item) condividono la memoria locale e possono sincronizzarsi tra loro. 
+Un kernel è una sequenza di istruzioni che può essere eseguita in parallelo su più compute unit della GPU. Ogni istanza di esecuzione del kernel è detta \textbf{work-item} (in CUDA vengono chiamati "thread") e ogni work-item che appartengono allo stesso \textbf{work-group} (un gruppo di work-item) condividono la memoria locale e possono sincronizzarsi tra loro. 
 
 La collezione di tutti i work-item che eseguono un kernel è chiamata \textbf{launch grid} (o, in OpenCL, "NDRange"). La dimensione del launch grid è definita in termini di numero di work-item e work-group, e può essere configurata per massimizzare l'efficienza dell'esecuzione del kernel sulla GPU.
 
 \section{Stream-Processing}
-La prima forma di parallelismo su GPU è lo \emph{stream-processing}, in cui i dati vengono elaborati in flussi (streams) e ogni elemento del flusso viene elaborato in parallelo. Questo modello è adatto per operazioni che possono essere eseguite indipendentemente su ciascun elemento, come ad esempio l'elaborazione di immagini o la simulazione di particelle.
+La prima forma di parallelismo su GPU è lo \emph{stream-processing}, in cui i dati vengono elaborati in flussi (streams) e ogni elemento del flusso viene elaborato in parallelo. Questo modello è adatto per operazioni che possono essere eseguite in modo indipendente su ciascun elemento, come ad esempio l'elaborazione di immagini o la simulazione di particelle, e rientra nella categoria del parallelismo \emph{data-based}.
 
 \subsection{Kernel e dati}
 In questo caso il kernel è la sequenza di istruzioni da eseguire su porzioni corrispondenti di più input stream per ottenere uno stream di output. Il kernel lavora solo con i dati che gli sono stati assegnati, e non ha accesso a dati al di fuori del suo work-item o work-group.
 
-Inoltre il programmatore non ha alcun controllo sulla divisione del lavoro tra i work-item o tra i work-group e non può sincronizzare i work-item tra loro, se non quelli appartenenti allo stesso work-group. 
+In particolare, le operazioni che possono essere eseguite in parallelo sono quelle per cui il risultato delle operazioni è indipendente dalla gestione della divisione e della elaborazione dei dati, processi entrambi gestiti interamente dall'hardware. Quest'ultima caratteristica fa sì che lo stream processing effettuato su determinati dati eseguendo delle date operazioni abbia lo stesso risultato indipendentemente dall’hardware utilizzato (cambia solamente il tempo impiegato).
+
+Il programmatore non ha alcun controllo sulla divisione del lavoro tra i work-item o tra i work-group e non può sincronizzare i work-item tra loro, se non quelli appartenenti allo stesso work-group.
 
 \subsection{Esempio: Mandelbrot fractal}
 Il frattale di Mandelbrot è un insieme di punti complessi che non diverge quando iterati attraverso una funzione quadratica. Per generare un'immagine del frattale, ogni pixel dell'immagine può essere calcolato indipendentemente, rendendo questo problema ideale per il parallelismo su GPU.
@@ -81,8 +83,8 @@ I device di calcolo hanno la propria memoria dedicata, che è separata dalla mem
 \begin{description}
     \item[Global Memory] La memoria globale è accessibile a tutti i work-item e work-group, ma ha una latenza elevata. I contenuti in essi presenti permangono per la durata di esecuzione dell'intero programma e i dati possono essere modificati dai kernel.
     \item[Constant Memory] La memoria costante è una porzione di memoria globale che è ottimizzata per il broadcasting. Può essere modificata solo dall'host e se necessario può essere cambiata tra l'esecuzione di un kernel e l'altro.
-    \item[Images (o texture in CUDA)] La memoria per le immagini è ottimizzata per l'accesso 2D e 3D, e supporta operazioni di filtraggio, interpolazione,  l'indexing multidimensionale e a normalizzazione delle coordinate.
-    \item[Local Memory (shared memory in CUDA)] La memoria locale si trova fisicamente sulle compute unit e, a differenza della memoria globale, è volatile e viene allocata all'inizio di un determinato kernell e successivamente svuotata. Può essere comunque utilizzata dai work-item appartenenti allo stesso work-group per condividere dati e sincronizzarsi tra loro. Viene utilizzata per algoritmi più complessi che richiedono la condivisione di dati tra i work-item, come ad esempio le operazioni di riduzione o di convoluzione.
+    \item[Images (o texture in CUDA)] La memoria per le immagini è ottimizzata per l'accesso 2D e 3D, e supporta operazioni di filtraggio, interpolazione,  l'indexing multidimensionale e la normalizzazione delle coordinate.
+    \item[Local Memory (shared memory in CUDA)] La memoria locale si trova fisicamente sulle compute unit e, a differenza della memoria globale, è volatile e viene allocata all'inizio di un determinato kernel e successivamente svuotata. Può essere comunque utilizzata dai work-item appartenenti allo stesso work-group per condividere dati e sincronizzarsi tra loro. Viene utilizzata per algoritmi più complessi che richiedono la condivisione di dati tra i work-item, come ad esempio le operazioni di riduzione o di convoluzione, e permette di eseguire su CPU algoritmi non imbarazzantemente paralleli.
     \item[Private memory (local memory in CUDA)] Questa memoria contiene dati temporanei specifici di un singolo work-item, tipitcamente i dati da inserire all'interno dei registri di esecuzione. Se non vi sono registri sufficienti per la quantità di dati da gestire si ha un \emph{register spill}\footnote{Il register spill è un fenomeno che si verifica quando un kernel utilizza più registri di quelli disponibili sulla GPU, costringendo il compilatore a spostare alcuni dati dalla memoria dei registri alla memoria globale o locale. Questo può causare un degrado delle prestazioni, poiché l'accesso alla memoria globale o locale è molto più lento rispetto all'accesso ai registri.} e i dati vengono spostati in local memory, con conseguente degrado delle prestazioni.
 \end{description}
 
@@ -110,6 +112,7 @@ Considerando un setup moderno:
 
 \noindent
 Il problema principale di questo tipo di architettura è che la comunicazione tra host e device è molto più lenta rispetto alla comunicazione all'interno del device stesso. Pertanto, è importante minimizzare il numero di trasferimenti di dati tra host e device per massimizzare le prestazioni del programma GPGPU.
+In particolare, il trasferimento dati da host a GPU dipende dalla banda passante del bus PCI express, che si aggira sui 16 GB/s.
 
 \begin{figure}[htbp]
     \centering
@@ -301,6 +304,21 @@ kernel void iteration(
 
 In questo caso, i work-item di uno stesso warp accedono a elementi contigui degli array \texttt{posArray} e \texttt{velArray}. Il controller di memoria può quindi servire tutte le richieste con un numero minimo di transazioni (tipicamente una per array), massimizzando la banda passante.
 
+\section{Asincronicità}
+
+La GPU opera in maniera indipendente rispetto alla CPU, rendendo la comunicazione tra host e device intrinsecamente asincrona. Per gestire questa interazione, si utilizzano delle code di esecuzione chiamate \emph{command queues} in OpenCL e \emph{streams} in CUDA.
+
+Mentre in CUDA la gestione può essere implicita, in OpenCL la gestione della coda deve sempre essere esplicitata. Per coordinare le operazioni vengono utilizzati gli \emph{eventi}, marcatori associati ai singoli comandi che permettono all'host di monitorare l'avanzamento dei singoli task. Nello specifico, l'host può:
+
+\begin{itemize}
+    \item Sospendere l'esecuzione di un comando fino al completamento di un altro task precedentemente avviato;
+    \item Richiedere lo stato di un evento;
+    \item Imporre delle barriere di sincronizzazione affinché un device completi tutti i comandi pendenti prima di procedere.
+\end{itemize}
+
+Il principale vantaggio dell’asincronicità risiede nella capacità di "nascondere" la latenza dei trasferimenti dati attraverso il bus PCIe sovrapponendo temporalmente le operazioni di I/O con l'esecuzione dei kernel.
+Inoltre, gli eventi permettono una sincronizzazione granulare (sul singolo kernel) rispetto alla sincronizzazione globale dell'intero device.
+
 \section{CUDA vs OpenCL}
 
 CUDA e OpenCL rappresentano due approcci differenti alla programmazione su GPU. Pur condividendo molti concetti di base (kernel, memoria device, esecuzione parallela), si differenziano sia per il modello di programmazione lato host sia per il linguaggio utilizzato lato device.
@@ -350,6 +368,6 @@ Un’altra differenza riguarda l’organizzazione del codice: CUDA adotta un mod
 
 Per quanto riguarda il linguaggio device, CUDA utilizza un’estensione del C++, mentre OpenCL definisce un proprio linguaggio basato sul C.
 
-Nel caso di CUDA, il linguaggio è fortemente integrato con il modello di esecuzione, ma presenta alcune limitazioni: ad esempio, non esiste una vera libreria standard completa e non sono supportate alcune operazioni tipiche dei linguaggi vettoriali, come lo \emph{swizzling}. Inoltre, l’indice globale di un thread deve essere calcolato manualmente combinando gli indici di blocco e thread.
+Nel caso di CUDA, il linguaggio è fortemente integrato con il modello di esecuzione, ma presenta alcune limitazioni: ad esempio, non esiste una vera libreria standard completa e non sono supportate alcune operazioni tipiche dei linguaggi vettoriali, come lo \emph{swizzling}. Inoltre, l’indice globale di un thread deve essere calcolato manualmente (combinando gli indici di blocco e thread) e la divisione della griglia di lancio in work group deve essere anch'essa effettuata manualmente.
 
-OpenCL, invece, fornisce un linguaggio più ricco dal punto di vista delle operazioni vettoriali. Sono disponibili costrutti come lo swizzling (ad esempio \texttt{f.xy}, \texttt{f.wwxx}) e funzioni built-in per ottenere direttamente gli indici dei work-item e dei work-group, semplificando la scrittura del codice parallelo.
+OpenCL, invece, fornisce un linguaggio più ricco dal punto di vista delle operazioni vettoriali, offrendo costrutti come lo swizzling (ad esempio \texttt{f.xy}, \texttt{f.wwxx}), ed è dotato di funzioni built-in per ottenere automaticamente gli indici dei work-item e dei work-group. Inoltre, OpenCL possiede un meccanismo di estensioni che permettono di sfruttare le caratteristiche architetturali proprie di specifici hardware.
