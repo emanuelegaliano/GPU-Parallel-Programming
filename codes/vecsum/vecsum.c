@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Init kernel setup and args
+    // Init kernels setup and args
     printf("Global work size: %zu\n", gws[0]);
     cl_event init_evt, sum_evt, wait_list[2];
 
@@ -141,7 +141,9 @@ int main(int argc, char** argv) {
     double total_time = total_runtime_ms(init_evt, sum_evt);
 
     printf("Init kernel time: %.3f ms\n", init_time);
+    printf("Init kernel bandwidth: %.3f GB/s\n", 2.0*memsize/(init_time*1.0e6));
     printf("Sum kernel time: %.3f ms\n", sum_time);
+    printf("Sum kernel bandwidth: %.3f GB/s\n", 3.0*memsize/(sum_time*1.0e6));
     printf("Total time (init + sum): %.3f ms\n", total_time);
 
     // ====== CLEANUP ======
