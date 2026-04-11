@@ -390,7 +390,7 @@ kernel void sum_sliding_k(global int * restrict out,
 }
 \end{code}
 
-La coalescenza è ottimale per le stesse ragioni dello stride distribuito. Il vantaggio principale rispetto alle versioni a stride fisso è la flessibilità: la global work size può essere scelta indipendentemente da \texttt{nels} — ad esempio un multiplo della preferred work-group size — e il ciclo si occupa automaticamente degli elementi rimanenti. Questo è particolarmente utile quando \texttt{nels} non è noto al momento della compilazione o varia a runtime. Uno degli svantaggi è che il ciclo introduce un overhead di controllo e il compilatore non può applicare ottimizzazioni al caricamento in memoria central come nel caso stride scalare distribuito \ref{code:sum_s2s_k} o con tipi vettoriali \ref{code:sum_v4_k}.
+La coalescenza è ottimale per le stesse ragioni dello stride distribuito. Il vantaggio principale rispetto alle versioni a stride fisso è la flessibilità: la global work size può essere scelta indipendentemente da \texttt{nels} — ad esempio un multiplo della preferred work-group size — e il ciclo si occupa automaticamente degli elementi rimanenti. Questo è particolarmente utile quando \texttt{nels} non è noto al momento della compilazione o varia a runtime. Uno degli svantaggi è che il ciclo introduce un overhead di controllo e il compilatore non può applicare ottimizzazioni al caricamento in memoria centrale come nel caso stride scalare distribuito \ref{code:sum_s2s_k} o con tipi vettoriali \ref{code:sum_v4_k}.
 
 \subsection*{Confronto degli approcci}
 
