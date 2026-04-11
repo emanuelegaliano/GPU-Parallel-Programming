@@ -3,8 +3,6 @@
 #include "../ocl_boiler.h"
 #include <CL/cl.h>
 
-
-
 int parse_args(int argc, char** argv, size_t* n);
 int select_gws(size_t n, size_t* gws, size_t* lws);
 void init_setup(const cl_kernel init_k, cl_mem vec1, cl_mem vec2, size_t n);
