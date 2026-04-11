@@ -2,6 +2,9 @@
    of OpenCL program. You can now reduce the boilerplate to:
   */
 
+#ifndef OCL_BOILER_H
+#define OCL_BOILER_H
+
 #if 0 // example usage:
 #include "ocl_boiler.h"
 
@@ -258,3 +261,5 @@ size_t round_mul_up(size_t gws, size_t lws)
 {
 	return ((gws + lws - 1)/lws)*lws;
 }
+
+#endif /* OCL_BOILER_H */
