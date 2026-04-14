@@ -200,3 +200,221 @@ kernel void assign_value(global float *restrict data, float value, int n) {
 }
 \end{code}
 In questo caso, il compilatore può assumere che le operazioni all'interno del ciclo for siano identiche e può quindi ottimizzare il codice, ad esempio eliminando il ciclo e inizializzando il valore di \texttt{data[gid]} una sola volta. Questo può portare a un miglioramento significativo delle prestazioni, soprattutto se $n$ è grande.
+
+\section{Vettorizzazione}
+
+La \emph{vettorizzazione} è una tecnica di ottimizzazione che consiste nel far elaborare a ciascun work-item più elementi contemporaneamente, anziché uno solo. Questo riduce il numero totale di work-item necessari per processare un dataset, abbassando l'overhead di scheduling e permettendo di sfruttare più efficacemente le risorse hardware.
+
+In OpenCL esistono due modalità principali per applicare la vettorizzazione:
+\begin{description}
+    \item[Stride scalare] Ciascun work-item accede a più elementi usando variabili scalari distinte e indici calcolati esplicitamente. Il programmatore gestisce manualmente il calcolo degli indici.
+    \item[Tipi vettoriali] OpenCL mette a disposizione tipi di dato vettoriali nativi (\texttt{int2}, \texttt{int4}, \texttt{int8}, \texttt{int16}, ecc.) che permettono di operare su più elementi con una singola istruzione, sfruttando direttamente le unità SIMD dell'hardware.
+\end{description}
+
+\noindent
+Per illustrare e confrontare i vari approcci si userà come esempio la somma element-wise di due vettori \texttt{vec1} e \texttt{vec2} con risultato in \texttt{out}.
+
+\subsection{Kernel di inizializzazione}
+
+Il kernel \texttt{init\_k} inizializza i due vettori di input: \texttt{vec1[i] = i} e \texttt{vec2[i] = nels - i}, in modo che la somma attesa sia \texttt{out[i] = nels} per ogni indice \texttt{i}.
+
+\begin{code}[caption={Kernel di inizializzazione dei vettori di input}, label={code:vecsum_init}]
+kernel void init_k(global int * restrict vec1,
+                   global int * restrict vec2, int nels)
+{
+    int i = get_global_id(0);
+    if (i >= nels) return;
+    vec1[i] = i;
+    vec2[i] = nels - i;
+}
+\end{code}
+
+\subsection{Caso base}
+
+La baseline di partenza è \texttt{sum\_k}, dove ogni work-item elabora esattamente un elemento:
+
+\begin{code}[caption={Kernel di somma base: 1 work-item per elemento}, label={code:sum_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 1 2 3 4 5 6 7 ...
+kernel void sum_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int i = get_global_id(0);
+    if (i >= nels) return;
+    out[i] = vec1[i] + vec2[i];
+}
+\end{code}
+
+La global work size è pari a \texttt{nels}. La coalescenza è ottimale: work-item adiacenti accedono a posizioni adiacenti in memoria (stride 1), consentendo al controller di aggregare tutte le richieste di un warp\footnote{Un warp è un gruppo di work-item che vengono eseguiti simultaneamente su una unità di elaborazione.} in un'unica transazione.
+
+\subsection{Stride scalare contiguo}
+
+Un primo approccio consiste nel far elaborare a ciascun work-item un blocco di $s$ elementi \emph{consecutivi}. Con $s = 2$:
+
+\begin{code}[caption={Stride scalare contiguo, fattore 2}, label={code:sum_s2_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 0 1 1 2 2 3 3 ...
+kernel void sum_s2_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int wi = get_global_id(0);
+    int gi0 = 2*wi;
+    int gi1 = 2*wi + 1;
+
+    if (gi0 < nels) out[gi0] = vec1[gi0] + vec2[gi0];
+    if (gi1 < nels) out[gi1] = vec1[gi1] + vec2[gi1];
+}
+\end{code}
+
+Con fattore 4 (\texttt{sum\_s4\_k}) il work-item \texttt{wi} gestisce gli indici \texttt{4*wi}, \texttt{4*wi+1}, \texttt{4*wi+2}, \texttt{4*wi+3}. In entrambi i casi la global work size scende a $\lceil\texttt{nels}/s\rceil$.
+
+\paragraph{Coalescenza.}
+I work-item adiacenti accedono a blocchi contigui ma non sovrapposti: il work-item 0 legge gli indici 0--1, il work-item 1 legge 2--3, ecc. All'interno di un warp di $W$ work-item, il primo accesso copre le posizioni $0, 2, 4, \ldots, 2(W{-}1)$: la distanza tra work-item adiacenti è $s$, non 1. La coalescenza è quindi peggiore rispetto al caso base.
+
+\subsection{Stride scalare distribuito}
+
+Una variante più efficiente è lo stride \emph{distribuito}: ciascun work-item con indice \texttt{wi} elabora elementi separati dalla global work size (\texttt{gws}), ovvero \texttt{wi}, \texttt{wi + gws}, \texttt{wi + 2*gws}, ecc.
+
+\begin{code}[caption={Stride scalare distribuito, fattore 2}, label={code:sum_s2s_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 1 2 3 0 1 2 3 ...
+kernel void sum_s2s_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int wi = get_global_id(0);
+    int gi0 = wi;
+    int gi1 = wi + get_global_size(0);
+
+    if (gi0 < nels) out[gi0] = vec1[gi0] + vec2[gi0];
+    if (gi1 < nels) out[gi1] = vec1[gi1] + vec2[gi1];
+}
+\end{code}
+
+Con fattore 4 (\texttt{sum\_s4s\_k}) gli indici diventano \texttt{wi}, \texttt{wi+gws}, \texttt{wi+2*gws}, \texttt{wi+3*gws}.
+
+\paragraph{Coalescenza.}
+Per il primo accesso (\texttt{gi0 = wi}), work-item adiacenti leggono posizioni adiacenti del vettore (stride 1). Lo stesso vale per ogni accesso successivo (\texttt{gi1}, \texttt{gi2}, \texttt{gi3}), che coprono blocchi contigui separati di \texttt{gws} elementi. La coalescenza è ottimale, identica al caso base, a differenza dello stride contiguo.
+
+\subsubsection*{Confronto tra stride contiguo e distribuito}
+I due approcci producono lo stesso numero di accessi in memoria e la stessa riduzione della global work size, ma si comportano diversamente rispetto alla coalescenza. Nel caso distribuito, ogni accesso di un warp è a stride 1, il che permette al controller di servire ciascuna fase di lettura con un numero minimo di transazioni. Per questo motivo lo stride distribuito è generalmente preferibile.
+
+\subsection{Separazione delle fasi di load e store}
+
+Un ulteriore raffinamento dello stride distribuito a fattore 4 è \texttt{sum\_s4sx\_k}, che separa esplicitamente la fase di caricamento da quella di calcolo e scrittura:
+
+\begin{code}[caption={Stride distribuito, fattore 4, con load separati}, label={code:sum_s4sx_k}]
+kernel void sum_s4sx_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    const int gws = get_global_size(0);
+    const int wi  = get_global_id(0);
+    const int gi0 = wi;
+    const int gi1 = wi +   gws;
+    const int gi2 = wi + 2*gws;
+    const int gi3 = wi + 3*gws;
+
+    const int v10 = gi0 < nels ? vec1[gi0] : 0;
+    const int v20 = gi0 < nels ? vec2[gi0] : 0;
+    const int v11 = gi1 < nels ? vec1[gi1] : 0;
+    const int v21 = gi1 < nels ? vec2[gi1] : 0;
+    const int v12 = gi2 < nels ? vec1[gi2] : 0;
+    const int v22 = gi2 < nels ? vec2[gi2] : 0;
+    const int v13 = gi3 < nels ? vec1[gi3] : 0;
+    const int v23 = gi3 < nels ? vec2[gi3] : 0;
+
+    if (gi0 < nels) out[gi0] = v10 + v20;
+    if (gi1 < nels) out[gi1] = v11 + v21;
+    if (gi2 < nels) out[gi2] = v12 + v22;
+    if (gi3 < nels) out[gi3] = v13 + v23;
+}
+\end{code}
+
+Emettere tutti i caricamenti prima che i risultati siano necessari permette all'hardware di avviare più richieste di memoria in parallelo, nascondendo la latenza (\emph{latency hiding}). Dichiarare le variabili come \texttt{const} fornisce inoltre al compilatore la garanzia che i valori non cambieranno, facilitando il riordinamento delle istruzioni e ottimizzazioni ulteriori.
+
+\subsection{Tipi vettoriali}
+
+OpenCL fornisce tipi di dato vettoriali nativi — \texttt{int2}, \texttt{int4}, \texttt{int8}, \texttt{int16} — che raggruppano rispettivamente 2, 4, 8 e 16 elementi dello stesso tipo. Gli operatori aritmetici su questi tipi vengono applicati component-wise con una singola istruzione SIMD. Il kernel di somma con \texttt{int4} è:
+
+\begin{code}[caption={Kernel di somma con tipo vettoriale \texttt{int4}}, label={code:sum_v4_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 0 0 0 1 1 1 1 ...
+kernel void sum_v4_k(global int4 * restrict out,
+    global int4 const * restrict vec1,
+    global int4 const * restrict vec2,
+    int quarts)
+{
+    int wi = get_global_id(0);
+    if (wi >= quarts) return;
+    out[wi] = vec1[wi] + vec2[wi];
+}
+\end{code}
+
+Il parametro \texttt{quarts} $= \lceil\texttt{nels}/4\rceil$ è il numero di gruppi di 4 elementi. Il codice è identico nella struttura al caso base, ma ogni work-item opera su un \texttt{int4}: l'addizione esegue 4 somme a livello hardware con una sola istruzione. La stessa struttura vale per \texttt{sum\_v2\_k}, \texttt{sum\_v8\_k} e \texttt{sum\_v16\_k}, che usano rispettivamente \texttt{int2}, \texttt{int8} e \texttt{int16}.
+
+\paragraph{Coalescenza.}
+Il pattern di accesso è equivalente allo stride contiguo: il work-item 0 carica gli elementi [0--3], il work-item 1 carica [4--7], ecc. I blocchi acceduti da work-item adiacenti sono contigui, garantendo una buona coalescenza.
+
+\paragraph{Vantaggi rispetto allo stride scalare.}
+Sebbene il pattern di accesso sia simile allo stride scalare contiguo, i tipi vettoriali presentano vantaggi significativi:
+\begin{itemize}
+    \item Il compilatore genera istruzioni SIMD native senza dover dipendere dall'auto-vettorizzazione.
+    \item Il codice risulta più compatto e leggibile rispetto alle versioni scalari con stride.
+    \item L'espressione \texttt{vec1[wi] + vec2[wi]} comunica esplicitamente l'intenzione vettoriale, riducendo i margini di errore.
+\end{itemize}
+
+\subsection{Sliding window}
+
+Il kernel \texttt{sum\_sliding\_k} generalizza l'approccio a stride distribuito usando un ciclo \texttt{while} che avanza di \texttt{gws} ad ogni iterazione, anziché un numero fisso di accessi:
+
+\begin{code}[caption={Kernel di somma con sliding window}, label={code:sum_sliding_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 1 2 3 0 1 2 3 ...
+kernel void sum_sliding_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int wi = get_global_id(0);
+    while (wi < nels) {
+        out[wi] = vec1[wi] + vec2[wi];
+        wi += get_global_size(0);
+    }
+}
+\end{code}
+
+La coalescenza è ottimale per le stesse ragioni dello stride distribuito. Il vantaggio principale rispetto alle versioni a stride fisso è la flessibilità: la global work size può essere scelta indipendentemente da \texttt{nels} — ad esempio un multiplo della preferred work-group size — e il ciclo si occupa automaticamente degli elementi rimanenti. Questo è particolarmente utile quando \texttt{nels} non è noto al momento della compilazione o varia a runtime. Uno degli svantaggi è che il ciclo introduce un overhead di controllo e il compilatore non può applicare ottimizzazioni al caricamento in memoria centrale come nel caso stride scalare distribuito \ref{code:sum_s2s_k} o con tipi vettoriali \ref{code:sum_v4_k}.
+
+\subsection*{Confronto degli approcci}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{Kernel} & \textbf{Elem. per work-item} & \textbf{Coalescenza} & \textbf{Note} \\
+\midrule
+\texttt{sum\_k}        & 1           & Ottimale   & Caso base \\
+\texttt{sum\_s2\_k}    & 2 contigui  & Degradato  & Stride tra WI $= s$ \\
+\texttt{sum\_s4\_k}    & 4 contigui  & Degradato  & Stride tra WI $= s$ \\
+\texttt{sum\_s2s\_k}   & 2 distribuiti & Ottimale & Stride tra WI $= 1$ \\
+\texttt{sum\_s4s\_k}   & 4 distribuiti & Ottimale & Stride tra WI $= 1$ \\
+\texttt{sum\_s4sx\_k}  & 4 distribuiti & Ottimale & Load separati dagli store \\
+\texttt{sum\_v2\_k}    & 2 (int2)    & Buono      & SIMD nativo \\
+\texttt{sum\_v4\_k}    & 4 (int4)    & Buono      & SIMD nativo \\
+\texttt{sum\_v8\_k}    & 8 (int8)    & Buono      & SIMD nativo \\
+\texttt{sum\_v16\_k}   & 16 (int16)  & Buono      & SIMD nativo \\
+\texttt{sum\_sliding\_k} & variabile & Ottimale   & GWS indipendente da \texttt{nels} \\
+\bottomrule
+\end{tabular}
+\caption{Confronto tra gli approcci di vettorizzazione per il kernel di somma.}
+\label{tab:vecsum_comparison}
+\end{table}
+
