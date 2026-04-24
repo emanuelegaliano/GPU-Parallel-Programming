@@ -1,0 +1,13 @@
+kernel void init_k(global int *mat, int rows, int cols){
+    int c = get_global_id(0); // da 0 a ncols-1
+    int r = get_global_id(1); // da 0 a nrows-1
+
+    if (r < rows && c < cols) mat[r*cols + c] = r-c;
+}
+
+kernel void init_padding_k(global int *mat, int rows, int cols, int pitch_el){
+    int r = get_global_id(0);
+    int c = get_global_id(1);
+
+    if (r < rows && c < cols) mat[r*pitch_el + c] = r-c;
+}
