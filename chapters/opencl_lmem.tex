@@ -1,0 +1,361 @@
+\chapter{Local memory e sincronizzazione}\label{chap:opencl_lmem}
+
+In questo capitolo si introduce la local memory di OpenCL e i meccanismi di sincronizzazione necessari per usarla correttamente. I concetti vengono presentati in modo progressivo attraverso quattro versioni del kernel \emph{vecsmooth}: scalare, vettoriale, con local memory e vettoriale con local memory.
+
+% =====================================================
+\section{Il problema: smoothing di un vettore}\label{sec:opencl_lmem_problema}
+% =====================================================
+
+Il problema consiste nel calcolare, per ogni elemento di un vettore di interi, la media tra l'elemento stesso e i suoi vicini immediati:
+\[
+\texttt{out}[i] = \frac{\texttt{in}[i-1] + \texttt{in}[i] + \texttt{in}[i+1]}{3}
+\]
+con casi limite agli estremi: il primo elemento usa solo \texttt{in}[0] e \texttt{in}[1], l'ultimo usa \texttt{in}[nels-2] e \texttt{in}[nels-1].
+
+% =====================================================
+\section{Versione scalare}\label{sec:opencl_lmem_smooth_base}
+% =====================================================
+
+La versione base assegna un work-item per elemento. Usa un accumulatore \texttt{acc} e un divisore \texttt{div} aggiornati solo se l'elemento adiacente esiste, tramite due \texttt{if} indipendenti.
+
+\begin{code}[caption={Kernel smooth scalare}, label={code:smooth_k}]
+kernel void smooth_k(global int * restrict out,
+                     global const int * restrict in, int nels)
+{
+    int i = get_global_id(0);
+    if (i >= nels) return;
+
+    int acc = in[i];
+    int div = 1;
+
+    if (i > 0) {
+        acc += in[i-1];
+        ++div;
+    }
+    if (i < nels - 1) {
+        acc += in[i+1];
+        ++div;
+    }
+
+    out[i] = acc/div;
+}
+\end{code}
+
+Lato host la funzione \texttt{smooth()} calcola la GWS come multiplo della LWS tramite \texttt{round\_mul\_up}:
+
+\begin{code}[caption={Funzione host per il lancio del kernel smooth}, label={code:smooth_host_base}]
+cl_event smooth(cl_command_queue que, cl_kernel smooth_k,
+    cl_mem out, cl_mem in, cl_int nels,
+    size_t lws_cli, cl_event init_evt)
+{
+    const size_t lws[1] = { lws_cli };
+    const size_t gws[1] = { round_mul_up(nels, lws[0]) };
+
+    cl_uint arg_index = 0;
+    clSetKernelArg(smooth_k, arg_index++, sizeof(cl_mem), &out);
+    clSetKernelArg(smooth_k, arg_index++, sizeof(cl_mem), &in);
+    clSetKernelArg(smooth_k, arg_index++, sizeof(nels),   &nels);
+
+    cl_event smooth_evt;
+    clEnqueueNDRangeKernel(que, smooth_k, 1, NULL, gws, lws,
+                           1, &init_evt, &smooth_evt);
+    return smooth_evt;
+}
+\end{code}
+
+I due \texttt{if} indipendenti per i bordi non sono una scelta arbitraria: la sezione seguente ne spiega il costo rispetto a un \texttt{if}/\texttt{else}.
+
+La versione scalare rilegge gli stessi dati più volte: l'elemento \texttt{in[i]} viene letto dal work-item $i$, ma anche dai work-item $i-1$ e $i+1$ come vicino. Le versioni successive riducono questa ridondanza.
+
+% =====================================================
+\section{Costo dei branch: \texttt{if} indipendenti vs \texttt{if}/\texttt{else}}\label{sec:opencl_lmem_branch}
+% =====================================================
+
+L'hardware GPU gestisce la divergenza di flusso tramite \emph{predication}: quando i work-item di uno stesso warp seguono percorsi diversi, il hardware esegue tutti i percorsi mascherando selettivamente i work-item che non devono contribuire al risultato.
+
+\noindent
+Il costo dipende dalla struttura del condizionale:
+
+\begin{description}
+    \item[Due \texttt{if} indipendenti] Ogni condizionale viene valutato separatamente. I work-item che non soddisfano la condizione eseguono comunque le istruzioni del blocco, ma il risultato viene scartato. I due condizionali non si influenzano a vicenda: si paga solo il costo del blocco più costoso tra i due \texttt{if}.
+
+    \item[\texttt{if}/\texttt{else}] Tutti i work-item del wavefront eseguono \emph{entrambi} i rami: prima il blocco \texttt{if} (con i work-item del ramo \texttt{else} mascherati), poi il blocco \texttt{else} (con quelli del ramo \texttt{if} mascherati). Il costo totale è la somma dei due rami.
+\end{description}
+
+Ne consegue che due \texttt{if} indipendenti che coprono casi distinti sono preferibili a un \texttt{if}/\texttt{else}: nella forma con \texttt{else} si paga sempre il costo di entrambi i rami.
+
+% =====================================================
+\section{Versione vettoriale}\label{sec:opencl_lmem_smooth_v4}
+% =====================================================
+
+Nella versione vettoriale ogni work-item opera su una quartina \texttt{int4}. Gli elementi interni della quartina ricevono i loro vicini direttamente dagli altri componenti tramite swizzling, evitando letture ridondanti. Solo gli elementi agli estremi della quartina (\texttt{.x} e \texttt{.w}) devono leggere un elemento dalla quartina adiacente in global memory. Quella lettura usa l'aritmetica dei puntatori per accedere al singolo \texttt{int} senza caricare l'intera quartina.
+
+\begin{code}[caption={Kernel smooth vettoriale con \texttt{int4}}, label={code:smooth_v4_k}]
+kernel void smooth_v4_k(global int4 * restrict out,
+                        global const int4 * restrict in, int nquarts)
+{
+    int i = get_global_id(0);
+    if (i >= nquarts) return;
+
+    const int4 val = in[i]; /* .x .y .z .w */
+    /* vicini interni ottenuti per swizzling */
+    int4 acc = val + (int4)(0, val.xyz) + (int4)(val.yzw, 0);
+    int4 div = (int4)(2, 3, 3, 2);
+
+    if (i > 0) {
+        /* ultimo elemento della quartina precedente */
+        acc.x += *((global const int *)(in + i) - 1);
+        div.x += 1;
+    }
+    if (i < nquarts - 1) {
+        /* primo elemento della quartina successiva */
+        acc.w += *((global const int *)(in + i + 1));
+        div.w += 1;
+    }
+
+    out[i] = (int4)acc/div;
+}
+\end{code}
+
+Lato host le differenze rispetto alla versione scalare sono: il numero di quartine \texttt{nels/4} viene passato al kernel al posto di \texttt{nels} (con il vincolo che \texttt{nels} sia multiplo di 4), e il calcolo della banda passante tiene conto che ogni work-item legge 4 elementi propri più 2 di confine e ne scrive 4:
+
+\begin{code}[caption={Differenze host per la versione vettoriale}, label={code:smooth_host_v4}]
+/* nels deve essere multiplo di 4 */
+cl_event smooth_evt = smooth(que, smooth_k, d_out, d_in,
+                              nels/4, lws, init_evt);
+
+/* lettura: 4 propri + 2 di confine; scrittura: 4 */
+printf("smooth: %.4gGB/s\n",
+       (1 + 6.0/4) * memsize / (double)smooth_ns);
+\end{code}
+
+Questa versione accede comunque alla global memory per ogni elemento di confine. La sezione seguente introduce la local memory, che permette di condividere dati tra work-item dello stesso work-group senza tornare alla global memory.
+
+% =====================================================
+\section{La local memory}\label{sec:opencl_lmem_concetto}
+% =====================================================
+
+La local memory (chiamata \emph{shared memory} in CUDA) è una memoria on-chip allocata per ogni work-group al momento del lancio del kernel. A differenza della global memory, che persiste per l'intera durata del programma, la local memory è temporanea: viene allocata quando il work-group inizia l'esecuzione e viene liberata quando termina.
+
+\noindent
+Le proprietà principali sono:
+\begin{itemize}
+    \item È visibile solo ai work-item dello stesso work-group; work-group diversi hanno aree di local memory distinte e non possono comunicare tra loro tramite essa.
+    \item Ha latenza molto inferiore alla global memory, poiché si trova fisicamente sulla stessa compute unit che esegue il work-group.
+    \item La sua dimensione è limitata e influenza quanti work-group possono essere attivi contemporaneamente sulla stessa compute unit.
+\end{itemize}
+
+L'utilità principale è che i work-item dello stesso work-group girano sulla stessa compute unit: possono quindi condividere dati tramite la local memory senza passare dalla global memory, che ha latenza elevata.
+
+Nel codice device si dichiara con la keyword \texttt{\_\_local} (o \texttt{local}):
+
+\begin{code}[caption={Dichiarazione di un parametro in local memory}, label={code:lmem_decl}]
+kernel void esempio_k(local int * restrict cache)
+{
+    /* cache: local memory, condivisa tra tutti i WI del work-group */
+}
+\end{code}
+
+% =====================================================
+\section{Indici locali: \texttt{get\_local\_id()} e \texttt{get\_local\_size()}}\label{sec:opencl_lmem_ids}
+% =====================================================
+
+Oltre all'indice globale, ogni work-item ha un indice \emph{locale} che lo identifica all'interno del proprio work-group:
+
+\begin{description}
+    \item[\texttt{get\_global\_id(0)}] Indice del work-item nella griglia globale, da \texttt{0} a \texttt{GWS\,-\,1}.
+    \item[\texttt{get\_local\_id(0)}] Indice del work-item all'interno del suo work-group, da \texttt{0} a \texttt{LWS\,-\,1}.
+    \item[\texttt{get\_local\_size(0)}] Dimensione del work-group (= LWS).
+\end{description}
+
+\paragraph{Esempio.} Con GWS\,$=8$ e LWS\,$=4$ si hanno due work-group:
+\begin{itemize}
+    \item WG\,0: \texttt{gi} $= 0,1,2,3$ \quad \texttt{li} $= 0,1,2,3$
+    \item WG\,1: \texttt{gi} $= 4,5,6,7$ \quad \texttt{li} $= 0,1,2,3$
+\end{itemize}
+
+L'indice locale è fondamentale per posizionare i dati nella cache condivisa: il work-item con \texttt{li}$= k$ scrive il proprio valore in \texttt{cache[k+1]} e può leggere quello del vicino in \texttt{cache[k]} e \texttt{cache[k+2]} (con l'offset di 1 della cache lws$+$2 descritta nella sezione seguente).
+
+% =====================================================
+\section{Trade-off nella dimensione della cache}\label{sec:opencl_lmem_tradeoff}
+% =====================================================
+
+Per il kernel smooth, ogni work-item ha bisogno del proprio elemento e dei due elementi adiacenti. Esistono due scelte per la dimensione della cache:
+
+\begin{description}
+    \item[Cache di lws$+$2 elementi] Si riserva uno slot prima del primo elemento e uno dopo l'ultimo del work-group. Il vantaggio è che il kernel legge sempre dalla cache con un accesso uniforme; lo svantaggio è un'inizializzazione più complessa, in cui il primo e l'ultimo work-item devono caricare elementi aggiuntivi dalla global memory.
+
+    \item[Cache di lws elementi] Ogni work-item scrive solo il proprio dato. L'inizializzazione è semplice, ma i work-item ai bordi del work-group devono ancora accedere alla global memory per il vicino esterno.
+\end{description}
+
+Nelle implementazioni che seguono si adotta la prima alternativa (lws$+$2): il kernel legge sempre dalla cache, rendendo il comportamento uniforme per tutti i work-item.
+
+% =====================================================
+\section{Race condition in local memory}\label{sec:opencl_lmem_race}
+% =====================================================
+
+I work-item dello stesso work-group sono garantiti in esecuzione contemporanea sulla stessa compute unit, ma non necessariamente sulla stessa istruzione nello stesso ciclo di clock. L'hardware li raggruppa in wavefront di dimensione fissa — tipicamente 32 o 64 work-item — e work-item appartenenti a wavefront diversi possono trovarsi in punti diversi del programma.
+
+Se un work-group ha LWS $>$ warp\_size, esso è composto da più wavefront. In questo caso è possibile una \emph{race condition}: un work-item di un wavefront potrebbe leggere dalla local memory un valore che un work-item di un altro wavefront non ha ancora scritto.
+
+\paragraph{Esempio.} Con LWS\,$=64$ e warp\_size\,$=32$, un work-group è composto da 2 wavefront. Il wavefront~0 (work-item 0--31) potrebbe avanzare all'istruzione di lettura dalla cache prima che il wavefront~1 (work-item 32--63) abbia completato le scritture. Il valore letto sarebbe indeterminato.
+
+La soluzione è inserire una barriera di sincronizzazione tra la fase di scrittura e quella di lettura della cache.
+
+% =====================================================
+\section{Barriere}\label{sec:opencl_lmem_barrier}
+% =====================================================
+
+\begin{code}[caption={Barriera di sincronizzazione sulla local memory}, label={code:barrier}]
+barrier(CLK_LOCAL_MEM_FENCE);
+\end{code}
+
+La semantica è la seguente: tutte le scritture in local memory effettuate \emph{prima} della barriera da qualsiasi work-item del work-group sono garantite visibili a \emph{tutti} i work-item dello stesso work-group \emph{dopo} la barriera. Nessun work-item può superare la barriera finché tutti gli altri non la raggiungono.
+
+La barriera ha due vincoli importanti:
+
+\begin{enumerate}
+    \item \textbf{Solo intra-work-group.} Non esiste una barriera a livello di griglia: work-group diversi non possono sincronizzarsi tra loro e non è garantito che siano nemmeno in esecuzione contemporaneamente.
+
+    \item \textbf{Tutti i work-item devono raggiungerla.} Se alcuni work-item escono dal kernel prima della barriera (ad esempio con un \texttt{return} anticipato), gli altri rimarranno in attesa indefinita. Il pattern corretto è spostare il controllo \texttt{if (gi >= nels) return;} \emph{dopo} la barriera.
+\end{enumerate}
+
+% =====================================================
+\section{Allocazione di local memory dall'host}\label{sec:opencl_lmem_alloc}
+% =====================================================
+
+La local memory non viene allocata nel codice device: è l'host a specificarne la dimensione tramite \texttt{clSetKernelArg}, passando \texttt{NULL} come valore:
+
+\begin{code}[caption={Allocazione di local memory dall'host}, label={code:lmem_host_alloc}]
+err = clSetKernelArg(smooth_k, arg_index,
+                     (lws_cli + 2) * sizeof(cl_int), NULL);
+\end{code}
+
+Il \texttt{NULL} indica al runtime di allocare il numero di byte specificato come local memory per ciascun work-group, senza inizializzarli. La dimensione della cache influenza l'occupazione della compute unit: più grande è la cache, minore è il numero di work-group che possono essere attivi contemporaneamente sulla stessa CU, riducendo il margine per nascondere la latenza delle letture dalla global memory.
+
+% =====================================================
+\section{Versione con local memory}\label{sec:opencl_lmem_smooth_lmem}
+% =====================================================
+
+In questa versione ogni work-item carica il proprio elemento in una cache condivisa di \texttt{lws+2} elementi. Il primo work-item del work-group carica anche il predecessore del work-group, l'ultimo carica anche il successore. Una barriera garantisce che la cache sia completamente inizializzata prima che qualsiasi work-item la legga.
+
+Il \texttt{return} anticipato per gli indici fuori range viene spostato \emph{dopo} la barriera, in modo che tutti i work-item del work-group la raggiungano.
+
+\begin{code}[caption={Kernel smooth con local memory}, label={code:smooth_lmem_k}]
+kernel void smooth_lmem_k(global int * restrict out,
+                          global const int * restrict in,
+                          int nels,
+                          local int * restrict cache)
+{
+    const int lws = get_local_size(0);
+    int gi = get_global_id(0);
+    int li = get_local_id(0);
+
+    int val, acc;
+    int div = 1;
+
+    if (gi < nels) {
+        int val = in[gi];
+        cache[li + 1] = val; /* elemento centrale */
+
+        /* il primo WI del WG carica il predecessore del WG */
+        if (li == 0 && gi != 0)
+            cache[0] = in[gi - 1];
+        /* l'ultimo WI del WG carica il successore del WG */
+        if (li == lws - 1 && gi < nels - 1)
+            cache[li + 2] = in[gi + 1];
+
+        acc = val;
+    }
+
+    barrier(CLK_LOCAL_MEM_FENCE); /* tutte le scritture in cache completate */
+
+    if (gi >= nels) return; /* return DOPO la barriera */
+
+    if (gi > 0) {
+        acc += cache[li];     /* predecessore dalla cache */
+        ++div;
+    }
+    if (gi < nels - 1) {
+        acc += cache[li + 2]; /* successore dalla cache */
+        ++div;
+    }
+
+    out[gi] = acc/div;
+}
+\end{code}
+
+Lato host l'unica differenza rispetto alla versione scalare è l'argomento della cache, allocato con \texttt{NULL}:
+
+\begin{code}[caption={Allocazione della cache lato host (versione lmem)}, label={code:smooth_host_lmem}]
+clSetKernelArg(smooth_k, arg_index++,
+               (lws_cli + 2) * sizeof(cl_int), NULL);
+\end{code}
+
+% =====================================================
+\section{Versione vettoriale con local memory}\label{sec:opencl_lmem_smooth_v4lmem}
+% =====================================================
+
+L'ultima versione combina vettorizzazione e local memory. Poiché ogni work-item opera su una quartina, gli unici elementi che possono essere utili ai work-item vicini sono il primo (\texttt{.x}) e l'ultimo (\texttt{.w}) componente di ciascuna quartina.
+Considerando che non vi è alcun elemento che possa fungere sia da precedente che da successivo, si usano due cache separate di \texttt{lws} elementi ciascuna:
+
+\begin{itemize}
+    \item \texttt{cache\_prec[li]}: contiene l'ultimo elemento (\texttt{.w}) della quartina del work-item \texttt{li-1}, ovvero il predecessore della quartina del work-item \texttt{li}.
+    \item \texttt{cache\_succ[li]}: contiene il primo elemento (\texttt{.x}) della quartina del work-item \texttt{li+1}, ovvero il successore della quartina del work-item \texttt{li}.
+\end{itemize}
+
+Il primo work-item del work-group non ha un predecessore in \texttt{cache\_prec} e lo carica dalla global memory; l'ultimo non ha un successore in \texttt{cache\_succ} e lo carica anch'esso dalla global memory.
+
+\begin{code}[caption={Kernel smooth vettoriale con local memory}, label={code:smooth_v4_lmem_k}]
+kernel void smooth_v4_lmem_k(global int4 * restrict out,
+                              global const int4 * restrict in,
+                              int nquarts,
+                              local int * restrict cache_prec,
+                              local int * restrict cache_succ)
+{
+    int gi = get_global_id(0);
+    int li = get_local_id(0);
+    const int lws = get_local_size(0);
+
+    const int4 val = gi < nquarts ? in[gi] : (int4)(0);
+
+    /* ogni WI fornisce il suo .w al successivo (cache_prec)
+       e il suo .x al precedente (cache_succ) */
+    if (li + 1 < lws) cache_prec[li + 1] = val.w;
+    if (li > 0)       cache_succ[li - 1] = val.x;
+
+    /* il primo WI del WG legge il predecessore dalla global memory */
+    if (gi > 0 && li == 0)
+        cache_prec[0] = *((global const int *)(in + gi) - 1);
+    /* l'ultimo WI del WG legge il successore dalla global memory */
+    if (gi < nquarts - 1 && li == lws - 1)
+        cache_succ[li] = *((global const int *)(in + gi + 1));
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    int4 acc = val + (int4)(0, val.xyz) + (int4)(val.yzw, 0);
+    int4 div = (int4)(2, 3, 3, 2);
+
+    if (gi > 0) {
+        acc.x += cache_prec[li];
+        div.x += 1;
+    }
+    if (gi < nquarts - 1) {
+        acc.w += cache_succ[li];
+        div.w += 1;
+    }
+
+    if (gi < nquarts) out[gi] = acc/div;
+}
+\end{code}
+
+Lato host si allocano due cache di \texttt{lws\_cli} elementi ciascuna — senza il \texttt{+2} della versione scalare — poiché le cache contengono esattamente un elemento per work-item. Come nella versione vettoriale base, si passa \texttt{nels/4} al kernel:
+
+\begin{code}[caption={Allocazione delle due cache lato host (versione v4+lmem)}, label={code:smooth_host_v4lmem}]
+clSetKernelArg(smooth_k, arg_index++, lws_cli * sizeof(cl_int), NULL);
+clSetKernelArg(smooth_k, arg_index++, lws_cli * sizeof(cl_int), NULL);
+
+/* nels deve essere multiplo di 4 */
+cl_event smooth_evt = smooth(que, smooth_k, d_out, d_in,
+                              nels/4, lws, init_evt);
+\end{code}

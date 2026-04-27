@@ -418,3 +418,334 @@ La coalescenza è ottimale per le stesse ragioni dello stride distribuito. Il va
 \label{tab:vecsum_comparison}
 \end{table}
 
+\section{Matrici in OpenCL}\label{sec:opencl_ott_matrici}
+
+\subsection{Rappresentazione in memoria}
+
+In C, le matrici seguono il layout \emph{row-major}: l'indice di colonna è quello che progredisce più velocemente in memoria. Per una matrice \texttt{mat[3][2]}, il layout in memoria è:
+\[
+\texttt{mat[0][0]\ mat[0][1]\ mat[1][0]\ mat[1][1]\ mat[2][0]\ mat[2][1]}
+\]
+
+\noindent
+Esistono tre modi per allocare dinamicamente una matrice in C:
+
+\begin{description}
+    \item[Doppio puntatore con righe sparse] Le righe vengono allocate separatamente. L'accesso è identico agli array statici (\texttt{mat[r][c]}), ma le righe si trovano in posizioni sparse in memoria e serve spazio aggiuntivo per i puntatori alle righe.
+
+\begin{code}[caption={Matrice con righe sparse}, label={code:matinit_alloc1}]
+int **mat;
+mat = malloc(R * sizeof(int *));
+for (int r = 0; r < R; ++r)
+    mat[r] = malloc(C * sizeof(int));
+\end{code}
+
+    \item[Doppio puntatore con blocco unico] L'intera matrice è allocata in un unico blocco contiguo, ma si mantiene comunque il doppio livello di indirezione. Ogni accesso richiede due letture in memoria: prima si recupera il puntatore alla riga, poi si legge l'elemento.
+
+\begin{code}[caption={Matrice in blocco unico con doppio puntatore}, label={code:matinit_alloc2}]
+int **mat;
+mat = malloc(R * sizeof(int *));
+mat[0] = malloc(R * C * sizeof(int));
+for (int r = 1; r < R; ++r)
+    mat[r] = mat[r-1] + C;
+\end{code}
+
+    \item[Array linearizzato] La matrice è un puntatore semplice allocato in un unico blocco. L'accesso richiede un unico accesso in memoria tramite la formula \texttt{mat[r*C + c]}, ma richiede di conoscere a priori il numero di colonne.
+
+\begin{code}[caption={Matrice linearizzata}, label={code:matinit_alloc3}]
+int *mat;
+mat = malloc(R * C * sizeof(int));
+mat[r * C + c] = /* valore */;
+\end{code}
+
+\end{description}
+
+Nella GPGPU si lavora esclusivamente con array linearizzati per tre motivi: un solo accesso in memoria per elemento, nessun doppio livello di indirezione, e l'impossibilità di associare tra loro due allocazioni separate sulla GPU (i puntatori host non sono validi sul device).
+
+\subsection{Griglia di lancio 2D}
+
+Per operare su una matrice, è naturale usare una griglia di lancio bidimensionale: ogni work-item riceve un indice di riga e uno di colonna.
+
+Fino ad ora la local work size (LWS) era sempre \texttt{NULL}, delegando la scelta al driver. In questo caso la specifichiamo esplicitamente: la LWS è un quadrato di lato \texttt{lws\_cli}, quindi ogni work-group contiene \texttt{lws\_cli}$\times$\texttt{lws\_cli} work-item. Specificare la LWS esplicitamente impone che la GWS sia un suo multiplo esatto lungo ogni dimensione; per questo si usa \texttt{round\_mul\_up} anche sulla dimensione delle colonne.
+
+\begin{code}[caption={Kernel di inizializzazione 2D (prima versione)}, label={code:matinit_kernel_base}]
+kernel void init_k(global int *mat, int rows, int cols)
+{
+    int r = get_global_id(0);
+    int c = get_global_id(1);
+
+    if (r < rows && c < cols) mat[r * cols + c] = r - c;
+}
+\end{code}
+
+\begin{code}[caption={Lancio 2D lato host}, label={code:matinit_host_base}]
+const size_t lws[2] = { lws_cli, lws_cli };
+const size_t gws[2] = { round_mul_up(nrows, lws[0]),
+                         round_mul_up(ncols, lws[1]) };
+
+err = clEnqueueNDRangeKernel(que, init_k, 2, NULL, gws, lws,
+                              0, NULL, &init_evt);
+\end{code}
+
+Il parametro \texttt{2} in \texttt{clEnqueueNDRangeKernel} specifica che la griglia è bidimensionale. Il controllo \texttt{if (r < rows \&\& c < cols)} è necessario perché \texttt{round\_mul\_up} può produrre una GWS leggermente superiore alle dimensioni effettive della matrice.
+
+\subsection{Coalescenza in 2D e orientamento del warp}
+
+La versione precedente ha prestazioni non ottimali a causa della coalescenza degli accessi. Nell'hardware GPU i work-item vengono eseguiti in gruppi rettangolari (wavefront o warp). Se il work group è un quadrato di $16 \times 16$ work-item e la warp size è 32, il wavefront potrebbe essere organizzato come un rettangolo $4 \times 8$ o $8 \times 4$: la forma dipende da quale asse avanza più velocemente.
+
+L'asse \texttt{0} (\texttt{get\_global\_id(0)}) è quello che avanza più velocemente all'interno di un wavefront. Per ottenere accessi coalescenti, questo asse deve corrispondere all'indice di colonna: in questo modo work-item con indici progressivi accedono a posizioni contigue in memoria, e il controller può servire tutte le richieste del wavefront con una singola transazione.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}
+
+% ── LEFT PANEL: caso errato (asse 0 = riga) ─────────────────────
+% wavefront = colonna di WI → accessi strided
+
+\node[above, align=center, font=\small] at (2.0, 1.0)
+    {\textbf{Caso errato}\\[2pt]\texttt{get\_global\_id(0)} $=$ riga};
+
+% grid: tutti i riquadri
+\foreach \r in {0,...,3} {
+  \foreach \c in {0,...,3} {
+    \draw[gray!50] (\c, {-\r*0.85}) rectangle +(1, 0.85);
+    \node[font=\scriptsize] at (\c+0.5, {-\r*0.85+0.425}) {(\r,\c)};
+  }
+}
+% wavefront evidenziato: colonna 0
+\foreach \r in {0,...,3} {
+  \fill[orange!30] (0, {-\r*0.85}) rectangle +(1, 0.85);
+  \draw[orange!70, thick] (0, {-\r*0.85}) rectangle +(1, 0.85);
+  \node[font=\scriptsize] at (0.5, {-\r*0.85+0.425}) {(\r,0)};
+}
+
+% barra di memoria (16 celle)
+\node[left, font=\scriptsize] at (-0.05, -4.025) {mem:};
+\foreach \i in {0,...,15} {
+  \draw[gray!50] ({0.46*\i}, -4.2) rectangle +(0.46, 0.35);
+  \node[font=\tiny] at ({0.46*\i+0.23}, -4.025) {\i};
+}
+% posizioni accedute: 0, 4, 8, 12
+\foreach \m in {0,4,8,12} {
+  \fill[orange!30] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+  \draw[orange!70, thick] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+}
+
+% frecce: bottom della cella del wavefront → cella di memoria
+\foreach \r/\m in {0/0, 1/4, 2/8, 3/12} {
+  \draw[->, orange!80!black, shorten >=2pt]
+    (0.5, {-\r*0.85}) -- ({0.46*\m+0.23}, -3.85);
+}
+
+% annotazione stride
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}]
+  (0.23, -4.5) -- ({0.46*4+0.23}, -4.5)
+  node[midway, below, font=\scriptsize] {stride $=$ \texttt{ncols}};
+
+% ── RIGHT PANEL: caso corretto (asse 0 = colonna) ───────────────
+% wavefront = riga di WI → accessi contigui
+
+\begin{scope}[xshift=8.2cm]
+
+\node[above, align=center, font=\small] at (2.0, 1.0)
+    {\textbf{Caso corretto}\\[2pt]\texttt{get\_global\_id(0)} $=$ colonna};
+
+% grid
+\foreach \r in {0,...,3} {
+  \foreach \c in {0,...,3} {
+    \draw[gray!50] (\c, {-\r*0.85}) rectangle +(1, 0.85);
+    \node[font=\scriptsize] at (\c+0.5, {-\r*0.85+0.425}) {(\r,\c)};
+  }
+}
+% wavefront evidenziato: riga 0
+\foreach \c in {0,...,3} {
+  \fill[teal!25] (\c, 0) rectangle +(1, 0.85);
+  \draw[teal!70, thick] (\c, 0) rectangle +(1, 0.85);
+  \node[font=\scriptsize] at (\c+0.5, 0.425) {(0,\c)};
+}
+
+% barra di memoria
+\node[left, font=\scriptsize] at (-0.05, -4.025) {mem:};
+\foreach \i in {0,...,15} {
+  \draw[gray!50] ({0.46*\i}, -4.2) rectangle +(0.46, 0.35);
+  \node[font=\tiny] at ({0.46*\i+0.23}, -4.025) {\i};
+}
+% posizioni accedute: 0, 1, 2, 3
+\foreach \m in {0,1,2,3} {
+  \fill[teal!25] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+  \draw[teal!70, thick] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+}
+
+% frecce: bottom del wavefront → cella di memoria
+\foreach \c/\m in {0/0, 1/1, 2/2, 3/3} {
+  \draw[->, teal!80!black, shorten >=2pt]
+    (\c+0.5, 0) -- ({0.46*\m+0.23}, -3.85);
+}
+
+% annotazione stride
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}]
+  (0.23, -4.5) -- ({0.46*3+0.23}, -4.5)
+  node[midway, below, font=\scriptsize] {stride $= 1$};
+
+\end{scope}
+
+\end{tikzpicture}
+}
+\caption{Effetto dell'orientamento del wavefront sulla coalescenza in 2D, con work-group $4\times 4$ e wavefront di 4 work-item. A sinistra, con \texttt{get\_global\_id(0)} $=$ riga, il wavefront è verticale (colonna) e gli accessi in memoria sono distanziati di \texttt{ncols} posizioni (arancione). A destra, con \texttt{get\_global\_id(0)} $=$ colonna, il wavefront è orizzontale (riga) e gli accessi sono contigui (turchese).}
+\label{fig:coalescenza_2d}
+\end{figure}
+
+\noindent
+La correzione richiede di scambiare gli indici nel kernel:
+
+\begin{code}[caption={Kernel di inizializzazione 2D (versione con coalescenza corretta)}, label={code:matinit_kernel_inv}]
+kernel void init_k(global int *mat, int rows, int cols)
+{
+    int r = get_global_id(1); /* asse 1: avanza lentamente */
+    int c = get_global_id(0); /* asse 0: avanza velocemente */
+
+    if (r < rows && c < cols) mat[r * cols + c] = r - c;
+}
+\end{code}
+
+Lato host è sufficiente scambiare \texttt{nrows} e \texttt{ncols} nella definizione della GWS:
+
+\begin{code}[caption={GWS corretta per coalescenza ottimale}, label={code:matinit_host_inv}]
+const size_t gws[2] = { round_mul_up(ncols, lws[0]),
+                         round_mul_up(nrows, lws[1]) };
+\end{code}
+
+\subsection{Padding (pitch)}
+
+La coalescenza richiede non solo che i dati siano contigui, ma anche che siano \emph{allineati}: ogni riga della matrice dovrebbe iniziare a un indirizzo multiplo del base alignment dell'hardware.
+
+Se il numero di colonne non è un multiplo del base alignment, le righe successive alla prima iniziano a indirizzi non ottimali, degradando la coalescenza. La soluzione è inserire del \emph{padding} a fine riga, allargando la matrice fino al multiplo di colonne più vicino. Questo valore si chiama \emph{pitch}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.44cm, y=0.5cm]
+
+% ── TOP: senza padding (ncols=5, allineamento=4 elementi) ────────
+
+\node[left, font=\small, align=right] at (0, 0.5) {senza\\padding:};
+
+% Riga 0: celle 0–4 (blu)
+\foreach \i in {0,...,4} {
+  \fill[blue!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 1: celle 5–9 (verde)
+\foreach \i in {5,...,9} {
+  \fill[green!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 2: celle 10–14 (arancione)
+\foreach \i in {10,...,14} {
+  \fill[orange!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+
+% Marcatori di allineamento ogni 4 celle
+\foreach \x in {0,4,8,12} {
+  \draw[densely dashed, gray!60] (\x,-0.4) -- (\x,1.5);
+}
+
+% Etichette inizio riga
+\node[below, font=\scriptsize, align=center] at (0.5,0)
+    {\textcolor{blue!60!black}{riga~0}\\[-1pt]@0~\textcolor{green!50!black}{$\checkmark$}};
+\node[below, font=\scriptsize, align=center] at (5.5,0)
+    {\textcolor{green!60!black}{riga~1}\\[-1pt]@5~\textcolor{red!70!black}{$\times$}};
+\node[below, font=\scriptsize, align=center] at (10.5,0)
+    {\textcolor{orange!70!black}{riga~2}\\[-1pt]@10~\textcolor{red!70!black}{$\times$}};
+
+% ── BOTTOM: con padding (ncols=5, pitch=8) ───────────────────────
+
+\begin{scope}[yshift=-2.8cm]
+
+\node[left, font=\small, align=right] at (0, 0.5) {con\\padding:};
+
+% Riga 0 dati: 0–4 (blu)
+\foreach \i in {0,...,4} {
+  \fill[blue!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 0 padding: 5–7 (grigio)
+\foreach \i in {5,...,7} {
+  \fill[gray!20] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny, gray!55] at (\i+0.5, 0.5) {P};
+}
+% Riga 1 dati: 8–12 (verde)
+\foreach \i in {8,...,12} {
+  \fill[green!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 1 padding: 13–15 (grigio)
+\foreach \i in {13,...,15} {
+  \fill[gray!20] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny, gray!55] at (\i+0.5, 0.5) {P};
+}
+
+% Marcatori di allineamento ogni 8 celle
+\foreach \x in {0,8,16} {
+  \draw[densely dashed, gray!60] (\x,-0.4) -- (\x,2.0);
+}
+
+% Graffa pitch
+\draw[decorate, decoration={brace, amplitude=4pt}]
+  (0, 1.6) -- (8, 1.6)
+  node[midway, above, font=\scriptsize] {pitch $= 8$};
+
+% Etichette inizio riga
+\node[below, font=\scriptsize, align=center] at (0.5,0)
+    {\textcolor{blue!60!black}{riga~0}\\[-1pt]@0~\textcolor{green!50!black}{$\checkmark$}};
+\node[below, font=\scriptsize, align=center] at (8.5,0)
+    {\textcolor{green!60!black}{riga~1}\\[-1pt]@8~\textcolor{green!50!black}{$\checkmark$}};
+
+\end{scope}
+
+\end{tikzpicture}
+\caption{Effetto del padding sulla coalescenza. Senza padding (\texttt{ncols}$=5$, allineamento$=4$ elementi), le righe~1 e~2 iniziano ad indirizzi non multipli dell'allineamento ($\times$). Con padding (\texttt{pitch}$=8$), ogni riga inizia ad un indirizzo allineato ($\checkmark$). Le celle~P rappresentano lo spazio di padding aggiunto a fine riga.}
+\label{fig:padding_matrix}
+\end{figure}
+
+\begin{code}[caption={Calcolo del pitch lato host}, label={code:matinit_pitch}]
+const size_t base_alignment_byte = 256;
+const size_t base_alignment_el   = base_alignment_byte / sizeof(cl_int);
+
+size_t padded_pitch_el = round_mul_up(ncols, base_alignment_el);
+const size_t memsize   = padded_pitch_el * nrows * sizeof(cl_int);
+\end{code}
+
+Il kernel riceve \texttt{pitch\_el} come parametro aggiuntivo e lo usa al posto di \texttt{cols} per calcolare l'offset di riga:
+
+\begin{code}[caption={Kernel con padding (pitch)}, label={code:matinit_kernel_padding}]
+kernel void init_padding_k(global int *mat, int rows, int cols, int pitch_el)
+{
+    int r = get_global_id(1);
+    int c = get_global_id(0);
+
+    if (r < rows && c < cols) mat[r * pitch_el + c] = r - c;
+}
+\end{code}
+
+Nella funzione di verifica lato host, \texttt{pitch\_el} sostituisce \texttt{ncols} nel calcolo dell'indice di riga:
+
+\begin{code}[caption={Verifica con pitch}, label={code:matinit_verify_padding}]
+void verify(const cl_int *mat, int nrows, int ncols, int pitch_el) {
+    for (int r = 0; r < nrows; ++r)
+        for (int c = 0; c < ncols; ++c) {
+            int expected = r - c;
+            int computed = mat[r * pitch_el + c];
+            if (expected != computed) { /* errore */ }
+        }
+}
+\end{code}
+
