@@ -237,7 +237,7 @@ Il \texttt{NULL} indica al runtime di allocare il numero di byte specificato com
 \section{Versione con local memory}\label{sec:opencl_lmem_smooth_lmem}
 % =====================================================
 
-In questa versione ogni work-item carica il proprio elemento in una cache condivisa di \texttt{lws+2} elementi. Il first work-item del work-group carica anche il predecessore del work-group, l'ultimo carica anche il successore. Una barriera garantisce che la cache sia completamente inizializzata prima che qualsiasi work-item la legga.
+In questa versione ogni work-item carica il proprio elemento in una cache condivisa di \texttt{lws+2} elementi. Il primo work-item del work-group carica anche il predecessore del work-group, l'ultimo carica anche il successore. Una barriera garantisce che la cache sia completamente inizializzata prima che qualsiasi work-item la legga.
 
 Il \texttt{return} anticipato per gli indici fuori range viene spostato \emph{dopo} la barriera, in modo che tutti i work-item del work-group la raggiungano.
 
@@ -296,7 +296,8 @@ clSetKernelArg(smooth_k, arg_index++,
 \section{Versione vettoriale con local memory}\label{sec:opencl_lmem_smooth_v4lmem}
 % =====================================================
 
-L'ultima versione combina vettorizzazione e local memory. Poiché ogni work-item opera su una quartina, gli unici elementi che possono essere utili ai work-item vicini sono il primo (\texttt{.x}) e l'ultimo (\texttt{.w}) componente di ciascuna quartina. Si usano due cache separate di \texttt{lws} elementi ciascuna:
+L'ultima versione combina vettorizzazione e local memory. Poiché ogni work-item opera su una quartina, gli unici elementi che possono essere utili ai work-item vicini sono il primo (\texttt{.x}) e l'ultimo (\texttt{.w}) componente di ciascuna quartina.
+Considerando che non vi è alcun elemento che possa fungere sia da precedente che da successivo, si usano due cache separate di \texttt{lws} elementi ciascuna:
 
 \begin{itemize}
     \item \texttt{cache\_prec[li]}: contiene l'ultimo elemento (\texttt{.w}) della quartina del work-item \texttt{li-1}, ovvero il predecessore della quartina del work-item \texttt{li}.
@@ -348,7 +349,7 @@ kernel void smooth_v4_lmem_k(global int4 * restrict out,
 }
 \end{code}
 
-Lato host si allocano due cache di \texttt{lws\_cli} elementi ciascuna — senza il \texttt{+2} della versione scalare, poiché le cache contengono già esattamente un elemento per work-item. Come nella versione vettoriale base, si passa \texttt{nels/4} al kernel:
+Lato host si allocano due cache di \texttt{lws\_cli} elementi ciascuna — senza il \texttt{+2} della versione scalare — poiché le cache contengono esattamente un elemento per work-item. Come nella versione vettoriale base, si passa \texttt{nels/4} al kernel:
 
 \begin{code}[caption={Allocazione delle due cache lato host (versione v4+lmem)}, label={code:smooth_host_v4lmem}]
 clSetKernelArg(smooth_k, arg_index++, lws_cli * sizeof(cl_int), NULL);
