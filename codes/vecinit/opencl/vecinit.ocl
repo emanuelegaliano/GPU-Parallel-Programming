@@ -1,0 +1,5 @@
+kernel void init_k(global int *vec)
+{
+	int i = get_global_id(0);
+	vec[i] = i;
+}
