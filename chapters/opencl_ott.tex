@@ -1,0 +1,751 @@
+\chapter{Ottimizzazione e gestione dell’esecuzione in OpenCL}\label{sec:opencl_basi_mapping}
+
+\section{Mapping al posto di read}
+Nella versione precedente, dopo l’esecuzione del kernel, i dati prodotti sul device venivano trasferiti all’host tramite una copia esplicita. Questo richiedeva due operazioni distinte:
+\begin{itemize}
+    \item allocare un vettore lato host con \texttt{malloc};
+    \item copiare i dati dal device con \texttt{clEnqueueReadBuffer}.
+\end{itemize}
+\noindent
+Questo approccio è semplice e immediato, ma introduce un overhead dovuto sia alla gestione separata della memoria sia alla copia esplicita dei dati.
+
+L’idea del mapping è quella di evitare questa copia esplicita e permettere all’host di accedere direttamente al buffer OpenCL. In pratica:
+\begin{itemize}
+    \item il buffer viene allocato in modo compatibile con l’accesso da host;
+    \item l’host ottiene un puntatore al buffer tramite \texttt{clEnqueueMapBuffer};
+    \item una volta terminato l’utilizzo, il buffer viene rilasciato con \texttt{clEnqueueUnmapMemObject}.
+\end{itemize}
+
+In questo modo si semplifica la fase finale di recupero dei dati e, in molti casi, si riduce il costo complessivo del trasferimento.
+
+\section{Modifica nella creazione del buffer}
+
+La prima modifica riguarda la creazione del buffer. Nella versione originale si aveva:
+
+\begin{code}[caption={Creazione del buffer senza mapping}, label={code:buffer_no_map}]
+cl_mem d_vec = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, memsize, NULL, &err);
+\end{code}
+
+Nella versione ottimizzata si utilizza invece:
+
+\begin{code}[caption={Creazione del buffer con mapping}, label={code:buffer_map}]
+cl_mem d_vec = clCreateBuffer(
+  ctx,
+  CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR,
+  memsize,
+  NULL,
+  &err
+);
+\end{code}
+
+Il flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR} indica al runtime (la libreria OpenCL) di allocare il buffer in una regione di memoria adatta a essere mappata dall’host. Non si tratta quindi di una semplice allocazione generica sul device, ma di una scelta che prepara il buffer a una successiva fase di accesso diretto dal lato host.
+
+\section{Recupero dei dati con il mapping}
+
+La seconda modifica riguarda il recupero dei dati. Nella versione precedente si utilizzava \texttt{clEnqueueReadBuffer}, mentre nella nuova versione si ricorre al mapping del buffer:
+
+\begin{code}[caption={Mapping del buffer}, label={code:buffer_map_read}]
+cl_event wait_list[1] = { init_evt };
+cl_event read_evt;
+
+cl_int *h_vec = clEnqueueMapBuffer(que, d_vec, CL_TRUE,
+                  CL_MAP_READ, 0, memsize, 1, wait_list, &read_evt, &err);
+ocl_check(err, "read buffer d_vec");
+\end{code}
+
+Questa funzione restituisce direttamente un puntatore, in questo caso \texttt{h\_vec}, che può essere utilizzato dal codice host per leggere il contenuto del buffer. Dal punto di vista logico, non si sta più chiedendo al runtime di copiare i dati in un vettore separato, ma di rendere accessibile il contenuto del buffer stesso.
+
+\section{Accesso ai dati}
+
+Una volta ottenuto il puntatore, i dati possono essere usati direttamente, quindi non è più necessario effettuare una copia esplicita dei dati in una struttura allocata manualmente sull’host. Il risultato è un codice più lineare e, in generale, un percorso di trasferimento più efficiente.
+
+\paragraph{Problemi di swap e pinning.}
+Per ottenere trasferimenti efficienti tra host e device, il runtime OpenCL sfrutta normalmente operazioni di DMA (\emph{Direct Memory Access}), che permettono di copiare i dati senza coinvolgere direttamente la CPU. Questo tipo di trasferimento è vantaggioso perché riduce il lavoro del processore, ma introduce anche alcune problematiche legate alla gestione della memoria host.
+
+La memoria dell’host, infatti, è controllata dal sistema operativo e può essere soggetta a operazioni come swap o rilocazione delle pagine. Se durante un trasferimento DMA quella regione di memoria viene spostata o modificata dal sistema operativo, si possono verificare inconsistenze nei dati o errori nel trasferimento.
+
+Per evitare questo problema, è necessario garantire che la memoria coinvolta rimanga stabile per tutta la durata dell’operazione. Questo si ottiene tramite il \emph{pinning}, cioè il blocco delle pagine di memoria host in modo che non possano essere spostate. In OpenCL questo comportamento è favorito dall’uso della flag \texttt{CL\_MEM\_ALLOC\_HOST\_PTR}, che consente al runtime di predisporre una memoria compatibile con questo tipo di gestione.
+
+Inoltre, bisogna ricordare che l’host non deve accedere alla memoria mappata prima che l’operazione sia stata completata. Questo vincolo può essere rispettato utilizzando eventi OpenCL oppure operazioni bloccanti, così da evitare race condition o accessi incoerenti ai dati.
+
+\section{Fase di unmapping}
+
+Dopo aver utilizzato i dati, è necessario rilasciare il mapping:
+
+\begin{code}[caption={Unmapping del buffer}, label={code:unmap}]
+cl_event unmap_evt;
+err = clEnqueueUnmapMemObject(que, d_vec, h_vec, 0, NULL, &unmap_evt);
+ocl_check(err, "unmap buffer d_vec");
+\end{code}
+
+Questa operazione segnala al runtime che l’host ha terminato di accedere al buffer. Da questo momento in poi, il buffer torna a essere gestito normalmente dalla libreria OpenCL e non deve più essere usato tramite il puntatore ottenuto con il mapping.
+
+Nel complesso, l’uso del mapping rappresenta una piccola ma importante ottimizzazione: il flusso dei dati tra device e host diventa più diretto, si elimina una copia esplicita e si sfrutta in modo più efficiente la memoria resa disponibile dal runtime.
+
+\section{Numeri della griglia di lancio}
+Generalmente il numero di work-item per blocco (local size) e il numero di blocchi (global size) sono scelti dal driver in modo da massimizzare l’occupazione del device, tenendo conto delle limitazioni hardware. Esistono però casi in cui è necessario specificare esplicitamente questi parametri, ad esempio per aumentare le prestazioni.
+
+\subsection{Global size ideale}
+La global size ideale è quella che permette di sfruttare al meglio le risorse del device, evitando sia di avere troppi work-item inattivi (sotto-occupazione) sia di avere un numero eccessivo di work-item che competono per le stesse risorse (sovraccarico). Questo si ottiene scegliendo una global size che sia un multiplo del numero di work-item per blocco, in modo da garantire che ogni blocco sia completamente occupato.
+
+\paragraph{Esempio.}
+Supponiamo di avere un device che supporta 256 work-item per blocco. Se si sceglie una global size di 1024, si avranno 4 blocchi completamente occupati, il che è ideale. Se invece si sceglie una global size di 1000, si avranno 3 blocchi completamente occupati e un quarto blocco con solo 232 work-item, il che porta a una sotto-occupazione e a prestazioni inferiori.
+
+\subsection{Numeri primi}
+Un caso particolare è quello in cui il numero di elementi da processare è un numero primo. In questo caso, se si sceglie una global size pari al numero di elementi, si avrà un solo blocco con un solo work-item, il che non sfrutta affatto la potenza del device. In questi casi è necessario scegliere una global size maggiore, magari arrotondando al multiplo più vicino di un numero di work-item per blocco che sia efficiente (ad esempio 256 o 512).
+
+Il codice device va quindi riscritto nel seguente modo:
+\begin{code}[caption={Scelta della preferred global size - codice device}, label={code:preferred_global_size_device}]
+    kernel void init_k(global int *vec, int nels)
+    {
+        int i = get_global_id(0);
+        if (i >= nels) return;
+        vec[i] = i;
+    }
+\end{code}
+
+Rispetto al codice precedente, passiamo al kernel anche il parametro \texttt{nels} e introduciamo un controllo dell'indice corrente per verificare che non superi il numero effettivo di elementi.
+
+Per quanto riguarda il codice host, modifichiamo il main per calcolare la quantità \texttt{wg\_mul}, che coincide con il numero di cui la global size deve essere multiplo in base all'hardware utilizzato. Il codice è il seguente:
+
+\begin{code}[caption={Scelta della preferred global size - codice host (main)}, label={code:preferred_global_size_host_main}]
+	size_t wg_mul;
+	err = clGetKernelWorkGroupInfo(init_k, d, 
+            CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, sizeof(wg_mul), &wg_mul, NULL);
+	ocl_check(err, "preferred work-group size multiple fallito", kname);
+
+	cl_event init_evt = init(que, init_k, d_vec, nels, wg_mul);
+\end{code}
+
+\subsection*{Descrizione del codice}
+\begin{itemize}
+    \item \texttt{clGetKernelWorkGroupInfo(...)} è la funzione che permette di interrogare il sistema sulle capacità e i limiti di un kernel specifico quando questo viene eseguito su un determinato device. La funzione ritorna un codice di errore che viene poi controllato con la funzione \texttt{ocl\_check}. I parametri sono:
+    \begin{itemize}
+        \item \texttt{init\_k} è il kernel per il quale si vogliono chiedere informazioni.
+        
+        \item \texttt{d} è l'id del device per il quale si vogliono chiedere informazioni.
+        
+        \item \texttt{CL\_KERNEL\_PREFERRED\_WORK\_GROUP\_SIZE\_MULTIPLE} è l'informazione che si vuole ottenere, ovvero il divisore ideale per la dimensione del work group.
+        
+        \item \texttt{sizeof(wg\_mul)} è la dimensione in byte della variabile in cui conservare l'informazione richiesta.
+        
+        \item \texttt{\&wg\_mul} è il puntatore alla variabile in cui memorizzare l'informazione.
+        
+        \item \texttt{NULL} è un puntatore opzionale a una variabile \texttt{size\_t} dove OpenCL scriverebbe il numero di byte effettivamente restituiti. Di solito si passa NULL se si sa già cosa aspettarsi.
+    \end{itemize}
+    
+    \item Rispetto al codice precedente, passiamo alla funzione \texttt{init()} anche i parametri \texttt{nels} e \texttt{wg\_mul}.
+\end{itemize}
+
+La funzione \texttt{init()} all'interno del codice host va invece modificata nel seguente modo:
+\begin{code}[caption={Scelta della preferred global size - codice host (init)}, label={code:preferred_global_size_host_init}]
+    cl_event init(cl_command_queue que, cl_kernel init_k, 
+                    cl_mem vec, cl_int nels, size_t wg_mul)
+    {
+        cl_int err;
+        cl_event init_evt;
+
+        const size_t gws[1] = { round_mul_up(nels, wg_mul) };
+        printf("%d | %zu = %zu\n", nels, wg_mul, gws[0]);
+
+        cl_uint arg_index = 0;
+        err = clSetKernelArg(init_k, arg_index, sizeof(cl_mem), &vec);
+        ocl_check(err, "init_k set kernel arg %u", arg_index);
+        ++arg_index;
+        err = clSetKernelArg(init_k, arg_index, sizeof(nels), &nels);
+        ocl_check(err, "init_k set kernel arg %u", arg_index);
+
+        err = clEnqueueNDRangeKernel(que, init_k, 1, NULL, gws,
+            NULL, 0, NULL, &init_evt);
+
+        ocl_check(err, "enqueue kernel init_k");
+        return init_evt;
+    }
+\end{code}
+
+\subsection*{Descrizione del codice}
+Le modifiche apportate rispetto al codice precedente sono le seguenti:
+\begin{itemize}
+    \item La global work size \texttt{gws} viene calcolata arrotondando il valore di \texttt{nels} in modo da renderlo un multiplo di \texttt{wg\_mul}.
+    \item Passiamo al kernel anche l'argomento \texttt{nels} usando la funzione \texttt{clSetKernelArg()}.
+\end{itemize}
+
+In questo modo si garantisce che ogni blocco sia completamente occupato anche se il numero di elementi è un numero primo.
+
+\section{Aliasing}
+L'aliasing è una situazione in cui due o più puntatori fanno riferimento alla stessa area di memoria. In OpenCL, l'aliasing può portare a problemi di coerenza dei dati e a prestazioni inferiori, poiché il runtime potrebbe dover inserire operazioni di sincronizzazione o di copia per garantire la correttezza del programma.
+
+Per evitare problemi di aliasing, è importante progettare i kernel in modo che ogni work-item acceda a una porzione distinta della memoria. Inoltre, è importante pensare che il compilatore debba essere libero di fare ottimizzazioni con la sicurezza che non si verifichi l'aliasing. Un modo per farlo è utilizzare la keyword \texttt{restrict} nei puntatori per indicare al compilatore che i dati a cui si accede non sono condivisi con altri puntatori. In questo modo il compilatore può applicare ottimizzazioni più aggressive, migliorando le prestazioni del kernel.
+
+\paragraph{Esempio: assegnazione per $\mathbf{n}$ volte di un valore a una zona di memoria.}
+Ipotizzando di avere il seguente kernel (molto inefficiente) che assegni lo stesso valore ad un elemento di array per n volte:
+\begin{code}[caption={Kernel con potenziale aliasing}, label={code:kernel_aliasing}]
+kernel void assign_value(global float *data, float value, int n) {
+    int gid = get_global_id(0);
+    for (int i = 0; i < n; i++) {
+        data[gid] = value;
+    }
+}
+\end{code}
+
+Si può notare che, nonostante il codice esegua la stessa operazione più volte, il compilatore non può comunque assumere che le operazioni siano uguali. Infatti, vi è la possibilità che ci sia un aliasing, ovvero che il puntatore \texttt{data} possa essere condiviso con altri puntatori. Di conseguenza, il compilatore potrebbe decidere di non ottimizzare il ciclo, eseguendo tutte le iterazioni del ciclo for.
+
+Se invece si utilizza la keyword \texttt{restrict} per indicare che il puntatore non è condiviso, il kernel potrebbe essere riscritto in questo modo:
+\begin{code}[caption={Kernel con \texttt{restrict} per evitare aliasing}, label={code:kernel_no_aliasing}]
+kernel void assign_value(global float *restrict data, float value, int n) {
+    int gid = get_global_id(0);
+    for (int i = 0; i < n; i++) {
+        data[gid] = value;
+    }
+}
+\end{code}
+In questo caso, il compilatore può assumere che le operazioni all'interno del ciclo for siano identiche e può quindi ottimizzare il codice, ad esempio eliminando il ciclo e inizializzando il valore di \texttt{data[gid]} una sola volta. Questo può portare a un miglioramento significativo delle prestazioni, soprattutto se $n$ è grande.
+
+\section{Vettorizzazione}
+
+La \emph{vettorizzazione} è una tecnica di ottimizzazione che consiste nel far elaborare a ciascun work-item più elementi contemporaneamente, anziché uno solo. Questo riduce il numero totale di work-item necessari per processare un dataset, abbassando l'overhead di scheduling e permettendo di sfruttare più efficacemente le risorse hardware.
+
+In OpenCL esistono due modalità principali per applicare la vettorizzazione:
+\begin{description}
+    \item[Stride scalare] Ciascun work-item accede a più elementi usando variabili scalari distinte e indici calcolati esplicitamente. Il programmatore gestisce manualmente il calcolo degli indici.
+    \item[Tipi vettoriali] OpenCL mette a disposizione tipi di dato vettoriali nativi (\texttt{int2}, \texttt{int4}, \texttt{int8}, \texttt{int16}, ecc.) che permettono di operare su più elementi con una singola istruzione, sfruttando direttamente le unità SIMD dell'hardware.
+\end{description}
+
+\noindent
+Per illustrare e confrontare i vari approcci si userà come esempio la somma element-wise di due vettori \texttt{vec1} e \texttt{vec2} con risultato in \texttt{out}.
+
+\subsection{Kernel di inizializzazione}
+
+Il kernel \texttt{init\_k} inizializza i due vettori di input: \texttt{vec1[i] = i} e \texttt{vec2[i] = nels - i}, in modo che la somma attesa sia \texttt{out[i] = nels} per ogni indice \texttt{i}.
+
+\begin{code}[caption={Kernel di inizializzazione dei vettori di input}, label={code:vecsum_init}]
+kernel void init_k(global int * restrict vec1,
+                   global int * restrict vec2, int nels)
+{
+    int i = get_global_id(0);
+    if (i >= nels) return;
+    vec1[i] = i;
+    vec2[i] = nels - i;
+}
+\end{code}
+
+\subsection{Caso base}
+
+La baseline di partenza è \texttt{sum\_k}, dove ogni work-item elabora esattamente un elemento:
+
+\begin{code}[caption={Kernel di somma base: 1 work-item per elemento}, label={code:sum_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 1 2 3 4 5 6 7 ...
+kernel void sum_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int i = get_global_id(0);
+    if (i >= nels) return;
+    out[i] = vec1[i] + vec2[i];
+}
+\end{code}
+
+La global work size è pari a \texttt{nels}. La coalescenza è ottimale: work-item adiacenti accedono a posizioni adiacenti in memoria (stride 1), consentendo al controller di aggregare tutte le richieste di un warp\footnote{Un warp è un gruppo di work-item che vengono eseguiti simultaneamente su una unità di elaborazione.} in un'unica transazione.
+
+\subsection{Stride scalare contiguo}
+
+Un primo approccio consiste nel far elaborare a ciascun work-item un blocco di $s$ elementi \emph{consecutivi}. Con $s = 2$:
+
+\begin{code}[caption={Stride scalare contiguo, fattore 2}, label={code:sum_s2_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 0 1 1 2 2 3 3 ...
+kernel void sum_s2_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int wi = get_global_id(0);
+    int gi0 = 2*wi;
+    int gi1 = 2*wi + 1;
+
+    if (gi0 < nels) out[gi0] = vec1[gi0] + vec2[gi0];
+    if (gi1 < nels) out[gi1] = vec1[gi1] + vec2[gi1];
+}
+\end{code}
+
+Con fattore 4 (\texttt{sum\_s4\_k}) il work-item \texttt{wi} gestisce gli indici \texttt{4*wi}, \texttt{4*wi+1}, \texttt{4*wi+2}, \texttt{4*wi+3}. In entrambi i casi la global work size scende a $\lceil\texttt{nels}/s\rceil$.
+
+\paragraph{Coalescenza.}
+I work-item adiacenti accedono a blocchi contigui ma non sovrapposti: il work-item 0 legge gli indici 0--1, il work-item 1 legge 2--3, ecc. All'interno di un warp di $W$ work-item, il primo accesso copre le posizioni $0, 2, 4, \ldots, 2(W{-}1)$: la distanza tra work-item adiacenti è $s$, non 1. La coalescenza è quindi peggiore rispetto al caso base.
+
+\subsection{Stride scalare distribuito}
+
+Una variante più efficiente è lo stride \emph{distribuito}: ciascun work-item con indice \texttt{wi} elabora elementi separati dalla global work size (\texttt{gws}), ovvero \texttt{wi}, \texttt{wi + gws}, \texttt{wi + 2*gws}, ecc.
+
+\begin{code}[caption={Stride scalare distribuito, fattore 2}, label={code:sum_s2s_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 1 2 3 0 1 2 3 ...
+kernel void sum_s2s_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int wi = get_global_id(0);
+    int gi0 = wi;
+    int gi1 = wi + get_global_size(0);
+
+    if (gi0 < nels) out[gi0] = vec1[gi0] + vec2[gi0];
+    if (gi1 < nels) out[gi1] = vec1[gi1] + vec2[gi1];
+}
+\end{code}
+
+Con fattore 4 (\texttt{sum\_s4s\_k}) gli indici diventano \texttt{wi}, \texttt{wi+gws}, \texttt{wi+2*gws}, \texttt{wi+3*gws}.
+
+\paragraph{Coalescenza.}
+Per il primo accesso (\texttt{gi0 = wi}), work-item adiacenti leggono posizioni adiacenti del vettore (stride 1). Lo stesso vale per ogni accesso successivo (\texttt{gi1}, \texttt{gi2}, \texttt{gi3}), che coprono blocchi contigui separati di \texttt{gws} elementi. La coalescenza è ottimale, identica al caso base, a differenza dello stride contiguo.
+
+\subsubsection*{Confronto tra stride contiguo e distribuito}
+I due approcci producono lo stesso numero di accessi in memoria e la stessa riduzione della global work size, ma si comportano diversamente rispetto alla coalescenza. Nel caso distribuito, ogni accesso di un warp è a stride 1, il che permette al controller di servire ciascuna fase di lettura con un numero minimo di transazioni. Per questo motivo lo stride distribuito è generalmente preferibile.
+
+\subsection{Separazione delle fasi di load e store}
+
+Un ulteriore raffinamento dello stride distribuito a fattore 4 è \texttt{sum\_s4sx\_k}, che separa esplicitamente la fase di caricamento da quella di calcolo e scrittura:
+
+\begin{code}[caption={Stride distribuito, fattore 4, con load separati}, label={code:sum_s4sx_k}]
+kernel void sum_s4sx_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    const int gws = get_global_size(0);
+    const int wi  = get_global_id(0);
+    const int gi0 = wi;
+    const int gi1 = wi +   gws;
+    const int gi2 = wi + 2*gws;
+    const int gi3 = wi + 3*gws;
+
+    const int v10 = gi0 < nels ? vec1[gi0] : 0;
+    const int v20 = gi0 < nels ? vec2[gi0] : 0;
+    const int v11 = gi1 < nels ? vec1[gi1] : 0;
+    const int v21 = gi1 < nels ? vec2[gi1] : 0;
+    const int v12 = gi2 < nels ? vec1[gi2] : 0;
+    const int v22 = gi2 < nels ? vec2[gi2] : 0;
+    const int v13 = gi3 < nels ? vec1[gi3] : 0;
+    const int v23 = gi3 < nels ? vec2[gi3] : 0;
+
+    if (gi0 < nels) out[gi0] = v10 + v20;
+    if (gi1 < nels) out[gi1] = v11 + v21;
+    if (gi2 < nels) out[gi2] = v12 + v22;
+    if (gi3 < nels) out[gi3] = v13 + v23;
+}
+\end{code}
+
+Emettere tutti i caricamenti prima che i risultati siano necessari permette all'hardware di avviare più richieste di memoria in parallelo, nascondendo la latenza (\emph{latency hiding}). Dichiarare le variabili come \texttt{const} fornisce inoltre al compilatore la garanzia che i valori non cambieranno, facilitando il riordinamento delle istruzioni e ottimizzazioni ulteriori.
+
+\subsection{Tipi vettoriali}
+
+OpenCL fornisce tipi di dato vettoriali nativi — \texttt{int2}, \texttt{int4}, \texttt{int8}, \texttt{int16} — che raggruppano rispettivamente 2, 4, 8 e 16 elementi dello stesso tipo. Gli operatori aritmetici su questi tipi vengono applicati component-wise con una singola istruzione SIMD. Il kernel di somma con \texttt{int4} è:
+
+\begin{code}[caption={Kernel di somma con tipo vettoriale \texttt{int4}}, label={code:sum_v4_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 0 0 0 1 1 1 1 ...
+kernel void sum_v4_k(global int4 * restrict out,
+    global int4 const * restrict vec1,
+    global int4 const * restrict vec2,
+    int quarts)
+{
+    int wi = get_global_id(0);
+    if (wi >= quarts) return;
+    out[wi] = vec1[wi] + vec2[wi];
+}
+\end{code}
+
+Il parametro \texttt{quarts} $= \lceil\texttt{nels}/4\rceil$ è il numero di gruppi di 4 elementi. Il codice è identico nella struttura al caso base, ma ogni work-item opera su un \texttt{int4}: l'addizione esegue 4 somme a livello hardware con una sola istruzione. La stessa struttura vale per \texttt{sum\_v2\_k}, \texttt{sum\_v8\_k} e \texttt{sum\_v16\_k}, che usano rispettivamente \texttt{int2}, \texttt{int8} e \texttt{int16}.
+
+\paragraph{Coalescenza.}
+Il pattern di accesso è equivalente allo stride contiguo: il work-item 0 carica gli elementi [0--3], il work-item 1 carica [4--7], ecc. I blocchi acceduti da work-item adiacenti sono contigui, garantendo una buona coalescenza.
+
+\paragraph{Vantaggi rispetto allo stride scalare.}
+Sebbene il pattern di accesso sia simile allo stride scalare contiguo, i tipi vettoriali presentano vantaggi significativi:
+\begin{itemize}
+    \item Il compilatore genera istruzioni SIMD native senza dover dipendere dall'auto-vettorizzazione.
+    \item Il codice risulta più compatto e leggibile rispetto alle versioni scalari con stride.
+    \item L'espressione \texttt{vec1[wi] + vec2[wi]} comunica esplicitamente l'intenzione vettoriale, riducendo i margini di errore.
+\end{itemize}
+
+\subsection{Sliding window}
+
+Il kernel \texttt{sum\_sliding\_k} generalizza l'approccio a stride distribuito usando un ciclo \texttt{while} che avanza di \texttt{gws} ad ogni iterazione, anziché un numero fisso di accessi:
+
+\begin{code}[caption={Kernel di somma con sliding window}, label={code:sum_sliding_k}]
+// indici nell'array:    0 1 2 3 4 5 6 7 ...
+// indici del work-item: 0 1 2 3 0 1 2 3 ...
+kernel void sum_sliding_k(global int * restrict out,
+    global int const * restrict vec1,
+    global int const * restrict vec2,
+    int nels)
+{
+    int wi = get_global_id(0);
+    while (wi < nels) {
+        out[wi] = vec1[wi] + vec2[wi];
+        wi += get_global_size(0);
+    }
+}
+\end{code}
+
+La coalescenza è ottimale per le stesse ragioni dello stride distribuito. Il vantaggio principale rispetto alle versioni a stride fisso è la flessibilità: la global work size può essere scelta indipendentemente da \texttt{nels} — ad esempio un multiplo della preferred work-group size — e il ciclo si occupa automaticamente degli elementi rimanenti. Questo è particolarmente utile quando \texttt{nels} non è noto al momento della compilazione o varia a runtime. Uno degli svantaggi è che il ciclo introduce un overhead di controllo e il compilatore non può applicare ottimizzazioni al caricamento in memoria centrale come nel caso stride scalare distribuito \ref{code:sum_s2s_k} o con tipi vettoriali \ref{code:sum_v4_k}.
+
+\subsection*{Confronto degli approcci}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{Kernel} & \textbf{Elem. per work-item} & \textbf{Coalescenza} & \textbf{Note} \\
+\midrule
+\texttt{sum\_k}        & 1           & Ottimale   & Caso base \\
+\texttt{sum\_s2\_k}    & 2 contigui  & Degradato  & Stride tra WI $= s$ \\
+\texttt{sum\_s4\_k}    & 4 contigui  & Degradato  & Stride tra WI $= s$ \\
+\texttt{sum\_s2s\_k}   & 2 distribuiti & Ottimale & Stride tra WI $= 1$ \\
+\texttt{sum\_s4s\_k}   & 4 distribuiti & Ottimale & Stride tra WI $= 1$ \\
+\texttt{sum\_s4sx\_k}  & 4 distribuiti & Ottimale & Load separati dagli store \\
+\texttt{sum\_v2\_k}    & 2 (int2)    & Buono      & SIMD nativo \\
+\texttt{sum\_v4\_k}    & 4 (int4)    & Buono      & SIMD nativo \\
+\texttt{sum\_v8\_k}    & 8 (int8)    & Buono      & SIMD nativo \\
+\texttt{sum\_v16\_k}   & 16 (int16)  & Buono      & SIMD nativo \\
+\texttt{sum\_sliding\_k} & variabile & Ottimale   & GWS indipendente da \texttt{nels} \\
+\bottomrule
+\end{tabular}
+\caption{Confronto tra gli approcci di vettorizzazione per il kernel di somma.}
+\label{tab:vecsum_comparison}
+\end{table}
+
+\section{Matrici in OpenCL}\label{sec:opencl_ott_matrici}
+
+\subsection{Rappresentazione in memoria}
+
+In C, le matrici seguono il layout \emph{row-major}: l'indice di colonna è quello che progredisce più velocemente in memoria. Per una matrice \texttt{mat[3][2]}, il layout in memoria è:
+\[
+\texttt{mat[0][0]\ mat[0][1]\ mat[1][0]\ mat[1][1]\ mat[2][0]\ mat[2][1]}
+\]
+
+\noindent
+Esistono tre modi per allocare dinamicamente una matrice in C:
+
+\begin{description}
+    \item[Doppio puntatore con righe sparse] Le righe vengono allocate separatamente. L'accesso è identico agli array statici (\texttt{mat[r][c]}), ma le righe si trovano in posizioni sparse in memoria e serve spazio aggiuntivo per i puntatori alle righe.
+
+\begin{code}[caption={Matrice con righe sparse}, label={code:matinit_alloc1}]
+int **mat;
+mat = malloc(R * sizeof(int *));
+for (int r = 0; r < R; ++r)
+    mat[r] = malloc(C * sizeof(int));
+\end{code}
+
+    \item[Doppio puntatore con blocco unico] L'intera matrice è allocata in un unico blocco contiguo, ma si mantiene comunque il doppio livello di indirezione. Ogni accesso richiede due letture in memoria: prima si recupera il puntatore alla riga, poi si legge l'elemento.
+
+\begin{code}[caption={Matrice in blocco unico con doppio puntatore}, label={code:matinit_alloc2}]
+int **mat;
+mat = malloc(R * sizeof(int *));
+mat[0] = malloc(R * C * sizeof(int));
+for (int r = 1; r < R; ++r)
+    mat[r] = mat[r-1] + C;
+\end{code}
+
+    \item[Array linearizzato] La matrice è un puntatore semplice allocato in un unico blocco. L'accesso richiede un unico accesso in memoria tramite la formula \texttt{mat[r*C + c]}, ma richiede di conoscere a priori il numero di colonne.
+
+\begin{code}[caption={Matrice linearizzata}, label={code:matinit_alloc3}]
+int *mat;
+mat = malloc(R * C * sizeof(int));
+mat[r * C + c] = /* valore */;
+\end{code}
+
+\end{description}
+
+Nella GPGPU si lavora esclusivamente con array linearizzati per tre motivi: un solo accesso in memoria per elemento, nessun doppio livello di indirezione, e l'impossibilità di associare tra loro due allocazioni separate sulla GPU (i puntatori host non sono validi sul device).
+
+\subsection{Griglia di lancio 2D}
+
+Per operare su una matrice, è naturale usare una griglia di lancio bidimensionale: ogni work-item riceve un indice di riga e uno di colonna.
+
+Fino ad ora la local work size (LWS) era sempre \texttt{NULL}, delegando la scelta al driver. In questo caso la specifichiamo esplicitamente: la LWS è un quadrato di lato \texttt{lws\_cli}, quindi ogni work-group contiene \texttt{lws\_cli}$\times$\texttt{lws\_cli} work-item. Specificare la LWS esplicitamente impone che la GWS sia un suo multiplo esatto lungo ogni dimensione; per questo si usa \texttt{round\_mul\_up} anche sulla dimensione delle colonne.
+
+\begin{code}[caption={Kernel di inizializzazione 2D (prima versione)}, label={code:matinit_kernel_base}]
+kernel void init_k(global int *mat, int rows, int cols)
+{
+    int r = get_global_id(0);
+    int c = get_global_id(1);
+
+    if (r < rows && c < cols) mat[r * cols + c] = r - c;
+}
+\end{code}
+
+\begin{code}[caption={Lancio 2D lato host}, label={code:matinit_host_base}]
+const size_t lws[2] = { lws_cli, lws_cli };
+const size_t gws[2] = { round_mul_up(nrows, lws[0]),
+                         round_mul_up(ncols, lws[1]) };
+
+err = clEnqueueNDRangeKernel(que, init_k, 2, NULL, gws, lws,
+                              0, NULL, &init_evt);
+\end{code}
+
+Il parametro \texttt{2} in \texttt{clEnqueueNDRangeKernel} specifica che la griglia è bidimensionale. Il controllo \texttt{if (r < rows \&\& c < cols)} è necessario perché \texttt{round\_mul\_up} può produrre una GWS leggermente superiore alle dimensioni effettive della matrice.
+
+\subsection{Coalescenza in 2D e orientamento del warp}
+
+La versione precedente ha prestazioni non ottimali a causa della coalescenza degli accessi. Nell'hardware GPU i work-item vengono eseguiti in gruppi rettangolari (wavefront o warp). Se il work group è un quadrato di $16 \times 16$ work-item e la warp size è 32, il wavefront potrebbe essere organizzato come un rettangolo $4 \times 8$ o $8 \times 4$: la forma dipende da quale asse avanza più velocemente.
+
+L'asse \texttt{0} (\texttt{get\_global\_id(0)}) è quello che avanza più velocemente all'interno di un wavefront. Per ottenere accessi coalescenti, questo asse deve corrispondere all'indice di colonna: in questo modo work-item con indici progressivi accedono a posizioni contigue in memoria, e il controller può servire tutte le richieste del wavefront con una singola transazione.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}
+
+% ── LEFT PANEL: caso errato (asse 0 = riga) ─────────────────────
+% wavefront = colonna di WI → accessi strided
+
+\node[above, align=center, font=\small] at (2.0, 1.0)
+    {\textbf{Caso errato}\\[2pt]\texttt{get\_global\_id(0)} $=$ riga};
+
+% grid: tutti i riquadri
+\foreach \r in {0,...,3} {
+  \foreach \c in {0,...,3} {
+    \draw[gray!50] (\c, {-\r*0.85}) rectangle +(1, 0.85);
+    \node[font=\scriptsize] at (\c+0.5, {-\r*0.85+0.425}) {(\r,\c)};
+  }
+}
+% wavefront evidenziato: colonna 0
+\foreach \r in {0,...,3} {
+  \fill[orange!30] (0, {-\r*0.85}) rectangle +(1, 0.85);
+  \draw[orange!70, thick] (0, {-\r*0.85}) rectangle +(1, 0.85);
+  \node[font=\scriptsize] at (0.5, {-\r*0.85+0.425}) {(\r,0)};
+}
+
+% barra di memoria (16 celle)
+\node[left, font=\scriptsize] at (-0.05, -4.025) {mem:};
+\foreach \i in {0,...,15} {
+  \draw[gray!50] ({0.46*\i}, -4.2) rectangle +(0.46, 0.35);
+  \node[font=\tiny] at ({0.46*\i+0.23}, -4.025) {\i};
+}
+% posizioni accedute: 0, 4, 8, 12
+\foreach \m in {0,4,8,12} {
+  \fill[orange!30] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+  \draw[orange!70, thick] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+}
+
+% frecce: bottom della cella del wavefront → cella di memoria
+\foreach \r/\m in {0/0, 1/4, 2/8, 3/12} {
+  \draw[->, orange!80!black, shorten >=2pt]
+    (0.5, {-\r*0.85}) -- ({0.46*\m+0.23}, -3.85);
+}
+
+% annotazione stride
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}]
+  (0.23, -4.5) -- ({0.46*4+0.23}, -4.5)
+  node[midway, below, font=\scriptsize] {stride $=$ \texttt{ncols}};
+
+% ── RIGHT PANEL: caso corretto (asse 0 = colonna) ───────────────
+% wavefront = riga di WI → accessi contigui
+
+\begin{scope}[xshift=8.2cm]
+
+\node[above, align=center, font=\small] at (2.0, 1.0)
+    {\textbf{Caso corretto}\\[2pt]\texttt{get\_global\_id(0)} $=$ colonna};
+
+% grid
+\foreach \r in {0,...,3} {
+  \foreach \c in {0,...,3} {
+    \draw[gray!50] (\c, {-\r*0.85}) rectangle +(1, 0.85);
+    \node[font=\scriptsize] at (\c+0.5, {-\r*0.85+0.425}) {(\r,\c)};
+  }
+}
+% wavefront evidenziato: riga 0
+\foreach \c in {0,...,3} {
+  \fill[teal!25] (\c, 0) rectangle +(1, 0.85);
+  \draw[teal!70, thick] (\c, 0) rectangle +(1, 0.85);
+  \node[font=\scriptsize] at (\c+0.5, 0.425) {(0,\c)};
+}
+
+% barra di memoria
+\node[left, font=\scriptsize] at (-0.05, -4.025) {mem:};
+\foreach \i in {0,...,15} {
+  \draw[gray!50] ({0.46*\i}, -4.2) rectangle +(0.46, 0.35);
+  \node[font=\tiny] at ({0.46*\i+0.23}, -4.025) {\i};
+}
+% posizioni accedute: 0, 1, 2, 3
+\foreach \m in {0,1,2,3} {
+  \fill[teal!25] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+  \draw[teal!70, thick] ({0.46*\m}, -4.2) rectangle +(0.46, 0.35);
+}
+
+% frecce: bottom del wavefront → cella di memoria
+\foreach \c/\m in {0/0, 1/1, 2/2, 3/3} {
+  \draw[->, teal!80!black, shorten >=2pt]
+    (\c+0.5, 0) -- ({0.46*\m+0.23}, -3.85);
+}
+
+% annotazione stride
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}]
+  (0.23, -4.5) -- ({0.46*3+0.23}, -4.5)
+  node[midway, below, font=\scriptsize] {stride $= 1$};
+
+\end{scope}
+
+\end{tikzpicture}
+}
+\caption{Effetto dell'orientamento del wavefront sulla coalescenza in 2D, con work-group $4\times 4$ e wavefront di 4 work-item. A sinistra, con \texttt{get\_global\_id(0)} $=$ riga, il wavefront è verticale (colonna) e gli accessi in memoria sono distanziati di \texttt{ncols} posizioni (arancione). A destra, con \texttt{get\_global\_id(0)} $=$ colonna, il wavefront è orizzontale (riga) e gli accessi sono contigui (turchese).}
+\label{fig:coalescenza_2d}
+\end{figure}
+
+\noindent
+La correzione richiede di scambiare gli indici nel kernel:
+
+\begin{code}[caption={Kernel di inizializzazione 2D (versione con coalescenza corretta)}, label={code:matinit_kernel_inv}]
+kernel void init_k(global int *mat, int rows, int cols)
+{
+    int r = get_global_id(1); /* asse 1: avanza lentamente */
+    int c = get_global_id(0); /* asse 0: avanza velocemente */
+
+    if (r < rows && c < cols) mat[r * cols + c] = r - c;
+}
+\end{code}
+
+Lato host è sufficiente scambiare \texttt{nrows} e \texttt{ncols} nella definizione della GWS:
+
+\begin{code}[caption={GWS corretta per coalescenza ottimale}, label={code:matinit_host_inv}]
+const size_t gws[2] = { round_mul_up(ncols, lws[0]),
+                         round_mul_up(nrows, lws[1]) };
+\end{code}
+
+\subsection{Padding (pitch)}
+
+La coalescenza richiede non solo che i dati siano contigui, ma anche che siano \emph{allineati}: ogni riga della matrice dovrebbe iniziare a un indirizzo multiplo del base alignment dell'hardware.
+
+Se il numero di colonne non è un multiplo del base alignment, le righe successive alla prima iniziano a indirizzi non ottimali, degradando la coalescenza. La soluzione è inserire del \emph{padding} a fine riga, allargando la matrice fino al multiplo di colonne più vicino. Questo valore si chiama \emph{pitch}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.44cm, y=0.5cm]
+
+% ── TOP: senza padding (ncols=5, allineamento=4 elementi) ────────
+
+\node[left, font=\small, align=right] at (0, 0.5) {senza\\padding:};
+
+% Riga 0: celle 0–4 (blu)
+\foreach \i in {0,...,4} {
+  \fill[blue!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 1: celle 5–9 (verde)
+\foreach \i in {5,...,9} {
+  \fill[green!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 2: celle 10–14 (arancione)
+\foreach \i in {10,...,14} {
+  \fill[orange!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+
+% Marcatori di allineamento ogni 4 celle
+\foreach \x in {0,4,8,12} {
+  \draw[densely dashed, gray!60] (\x,-0.4) -- (\x,1.5);
+}
+
+% Etichette inizio riga
+\node[below, font=\scriptsize, align=center] at (0.5,0)
+    {\textcolor{blue!60!black}{riga~0}\\[-1pt]@0~\textcolor{green!50!black}{$\checkmark$}};
+\node[below, font=\scriptsize, align=center] at (5.5,0)
+    {\textcolor{green!60!black}{riga~1}\\[-1pt]@5~\textcolor{red!70!black}{$\times$}};
+\node[below, font=\scriptsize, align=center] at (10.5,0)
+    {\textcolor{orange!70!black}{riga~2}\\[-1pt]@10~\textcolor{red!70!black}{$\times$}};
+
+% ── BOTTOM: con padding (ncols=5, pitch=8) ───────────────────────
+
+\begin{scope}[yshift=-2.8cm]
+
+\node[left, font=\small, align=right] at (0, 0.5) {con\\padding:};
+
+% Riga 0 dati: 0–4 (blu)
+\foreach \i in {0,...,4} {
+  \fill[blue!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 0 padding: 5–7 (grigio)
+\foreach \i in {5,...,7} {
+  \fill[gray!20] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny, gray!55] at (\i+0.5, 0.5) {P};
+}
+% Riga 1 dati: 8–12 (verde)
+\foreach \i in {8,...,12} {
+  \fill[green!25] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny] at (\i+0.5, 0.5) {\i};
+}
+% Riga 1 padding: 13–15 (grigio)
+\foreach \i in {13,...,15} {
+  \fill[gray!20] (\i,0) rectangle +(1,1);
+  \draw[gray!60] (\i,0) rectangle +(1,1);
+  \node[font=\tiny, gray!55] at (\i+0.5, 0.5) {P};
+}
+
+% Marcatori di allineamento ogni 8 celle
+\foreach \x in {0,8,16} {
+  \draw[densely dashed, gray!60] (\x,-0.4) -- (\x,2.0);
+}
+
+% Graffa pitch
+\draw[decorate, decoration={brace, amplitude=4pt}]
+  (0, 1.6) -- (8, 1.6)
+  node[midway, above, font=\scriptsize] {pitch $= 8$};
+
+% Etichette inizio riga
+\node[below, font=\scriptsize, align=center] at (0.5,0)
+    {\textcolor{blue!60!black}{riga~0}\\[-1pt]@0~\textcolor{green!50!black}{$\checkmark$}};
+\node[below, font=\scriptsize, align=center] at (8.5,0)
+    {\textcolor{green!60!black}{riga~1}\\[-1pt]@8~\textcolor{green!50!black}{$\checkmark$}};
+
+\end{scope}
+
+\end{tikzpicture}
+\caption{Effetto del padding sulla coalescenza. Senza padding (\texttt{ncols}$=5$, allineamento$=4$ elementi), le righe~1 e~2 iniziano ad indirizzi non multipli dell'allineamento ($\times$). Con padding (\texttt{pitch}$=8$), ogni riga inizia ad un indirizzo allineato ($\checkmark$). Le celle~P rappresentano lo spazio di padding aggiunto a fine riga.}
+\label{fig:padding_matrix}
+\end{figure}
+
+\begin{code}[caption={Calcolo del pitch lato host}, label={code:matinit_pitch}]
+const size_t base_alignment_byte = 256;
+const size_t base_alignment_el   = base_alignment_byte / sizeof(cl_int);
+
+size_t padded_pitch_el = round_mul_up(ncols, base_alignment_el);
+const size_t memsize   = padded_pitch_el * nrows * sizeof(cl_int);
+\end{code}
+
+Il kernel riceve \texttt{pitch\_el} come parametro aggiuntivo e lo usa al posto di \texttt{cols} per calcolare l'offset di riga:
+
+\begin{code}[caption={Kernel con padding (pitch)}, label={code:matinit_kernel_padding}]
+kernel void init_padding_k(global int *mat, int rows, int cols, int pitch_el)
+{
+    int r = get_global_id(1);
+    int c = get_global_id(0);
+
+    if (r < rows && c < cols) mat[r * pitch_el + c] = r - c;
+}
+\end{code}
+
+Nella funzione di verifica lato host, \texttt{pitch\_el} sostituisce \texttt{ncols} nel calcolo dell'indice di riga:
+
+\begin{code}[caption={Verifica con pitch}, label={code:matinit_verify_padding}]
+void verify(const cl_int *mat, int nrows, int ncols, int pitch_el) {
+    for (int r = 0; r < nrows; ++r)
+        for (int c = 0; c < ncols; ++c) {
+            int expected = r - c;
+            int computed = mat[r * pitch_el + c];
+            if (expected != computed) { /* errore */ }
+        }
+}
+\end{code}
+

@@ -1,0 +1,2 @@
+- problema di aliasing
+- Provare a scrivere la parte host della somma di due vettori, con una differenza: provare a specificare la local work size.
