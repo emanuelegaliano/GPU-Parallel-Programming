@@ -1,0 +1,57 @@
+kernel void init_k(global int *mat, int rows, int cols){
+    int c = get_global_id(0); // da 0 a ncols-1
+    int r = get_global_id(1); // da 0 a nrows-1
+
+    if (r < rows && c < cols)
+        mat[r*cols + c] = r-c;
+}
+
+// t_rows, t_cols -> righe e colonne della trasposta
+kernel void transpose_k(global int * restrict trasposta, global const int * restrict originale, int t_rows, int t_cols){
+    int t_c = get_global_id(0);
+    int t_r = get_global_id(1);
+
+    if(t_r < t_rows && t_c < t_cols){
+        trasposta[t_r*t_cols + t_c] = originale[t_c*t_rows + t_r];
+    }
+}
+
+// dimensione cache -> get_local_size(0)*get_local_size(1)
+kernel void transpose_lmem_k(global int * restrict trasposta,
+	global const int * restrict originale, int t_rows, int t_cols,
+	local int * restrict cache){
+	int o_c = get_global_id(0); // == get_group_id(0) *get_local_size(0) + get_local_id(0)
+	int o_r = get_global_id(1);
+
+	int lws = get_local_size(0); // == get_local_size(1) (work-group quadrati)
+	int l_c = get_local_id(0);
+	int l_r = get_local_id(1);
+
+// CIRCULAR_INDEX = 1 -> accesso ottimale alla local memory mediante indicizzazione circolare
+// CIRCULAR_INDEX = 0 -> semplice implementazione con uso della local memory
+#define CIRCULAR_INDEX 1
+#if CIRCULAR_INDEX
+	int circular_index = l_c + l_r;
+	if (circular_index >= lws)
+		circular_index -= lws;
+#endif
+
+	if (o_c < t_rows && o_r < t_cols)
+#if CIRCULAR_INDEX
+		cache[l_r*lws+circular_index] = originale[o_r*t_rows + o_c];
+#else
+		cache[l_r*lws+l_c] = originale[o_r*t_rows + o_c];
+#endif
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+	int t_c = get_group_id(1)*lws + get_local_id(0);
+	int t_r = get_group_id(0)*lws + get_local_id(1);
+	if (t_r < t_rows && t_c < t_cols) {
+#if CIRCULAR_INDEX
+		trasposta[t_r*t_cols + t_c] = cache[l_c*lws + circular_index];
+#else
+		trasposta[t_r*t_cols + t_c] = cache[l_c*lws + l_r];
+#endif
+	}
+}
