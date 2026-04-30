@@ -465,7 +465,8 @@ L'idea è dividere la matrice in \emph{tile} quadrati di \texttt{lws}$\times$\te
 
 \begin{figure}[htbp]
 \centering
-\resizebox{0.92\textwidth}{!}{%
+% Ridotto a 0.85 per renderlo più piccolo e gestibile
+\resizebox{0.85\textwidth}{!}{%
 \begin{tikzpicture}[x=0.6cm, y=0.6cm]
 
 %% ---- Matrice originale (x=[0,6]) ----
@@ -477,7 +478,12 @@ L'idea è dividere la matrice in \emph{tile} quadrati di \texttt{lws}$\times$\te
 \draw[black!70, thick] (0,0) rectangle (6,-6);
 \draw[black!45, semithick, dashed] (3,0)--(3,-6);
 \draw[black!45, semithick, dashed] (0,-3)--(6,-3);
-\node[above, font=\small\bfseries] at (3,0.5) {Originale};
+\node[above, font=\small\bfseries] at (3,1.3) {Originale};
+
+%% ---- Etichetta Fase 1 (Spostata più vicina alla matrice originale) ----
+\node[font=\footnotesize\bfseries, black!80, align=center,
+      draw=gray!50, fill=white, inner sep=2pt, rounded corners=2pt]
+    at (6.5, 1.3) {Fase~1\\ letture coal.};
 
 %% ---- Tile (local memory): x=[7.5,10.5], y=[-1.5,-4.5] ----
 \fill[white] (7.5,-1.5) rectangle (10.5,-4.5);
@@ -496,48 +502,47 @@ L'idea è dividere la matrice in \emph{tile} quadrati di \texttt{lws}$\times$\te
 \draw[black!70, thick] (12,0) rectangle (18,-6);
 \draw[black!45, semithick, dashed] (15,0)--(15,-6);
 \draw[black!45, semithick, dashed] (12,-3)--(18,-3);
-\node[above, font=\small\bfseries] at (15,0.5) {Trasposta};
+\node[above, font=\small\bfseries] at (15,1.3) {Trasposta};
 
-%% ---- Elemento s: (r=0, c=3) nell'originale → (r=3, c=0) nella trasposta ----
-\fill[black!85] (3.5,-0.5) circle (0.40);
+%% ---- Elemento s: (r=0, c=3) ----
+\fill[black!85] (3.5,-0.5) circle (0.35);
 \node[font=\small\bfseries, white] at (3.5,-0.5) {$s$};
-\node[above, font=\small, fill=white, fill opacity=0.9, inner sep=2pt]
+\node[above, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
     at (3.5, 0.1) {$(0,\,3)$};
 
-%% Elemento x: (r=1, c=5) → (r=5, c=1) [li_r=1, li_c=2 → tile[1*lws+2]]
-\fill[black!85] (5.5,-1.5) circle (0.40);
+%% Elemento x: (r=1, c=5) ----
+\fill[black!85] (5.5,-1.5) circle (0.35);
 \node[font=\small\bfseries, white] at (5.5,-1.5) {$x$};
-\node[above, font=\small, fill=white, fill opacity=0.9, inner sep=2pt]
+\node[above, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
     at (5.5,-0.9) {$(1,\,5)$};
 
-%% ---- Fase 1: frecce load (originale → bordo sinistro del tile) ----
-\draw[->, thick, black!75] (3.5,-0.5) to[out=0, in=155] (7.5,-2);
-\draw[->, thick, black!75] (5.5,-1.5) to[out=0, in=155] (7.5,-3);
-\node[font=\small\bfseries, black!80, align=center,
-      draw=gray!50, fill=white, inner sep=3pt, rounded corners=2pt]
-    at (5.8, 1.5) {Fase~1\\ letture coal.};
+%% ---- Frecce load ----
+\draw[->, thick, black!75] (3.9,-0.5) to[out=0, in=165] (7.5,-2);
+\draw[->, thick, black!75] (5.9,-1.5) to[out=0, in=165] (7.5,-3);
 
-%% ---- Percorso nella tile (mostra la trasposizione degli indici) ----
+%% ---- Percorso nella tile ----
 \draw[gray!55, thin, dashed] (7.5,-2) -- (10.5,-2);
 \draw[gray!55, thin, dashed] (7.5,-3) -- (10.5,-4);
 
-%% ---- Fase 2: frecce store (bordo destro del tile → trasposta) ----
-\draw[->, thick, olive!80!black] (10.5,-2) to[out=25, in=150] (12.5,-3.5);
-\draw[->, thick, olive!80!black] (10.5,-4) to[out=25, in=150] (13.5,-5.5);
-\node[font=\small\bfseries, olive!80!black, align=center,
-      draw=gray!50, fill=white, inner sep=3pt, rounded corners=2pt]
-    at (11.5,-6.8) {Fase~2\\ scritture coal.};
+%% ---- Etichetta Fase 2 ----
+\node[font=\footnotesize\bfseries, olive!80!black, align=center,
+      draw=gray!50, fill=white, inner sep=2pt, rounded corners=2pt]
+    at (10.5,-7.0) {Fase~2\\ scritture coal.};
+
+%% ---- Frecce store ----
+\draw[->, thick, olive!80!black] (10.5,-2) to[out=15, in=155] (12.5,-3.5);
+\draw[->, thick, olive!80!black] (10.5,-4) to[out=15, in=155] (13.5,-5.5);
 
 %% ---- Elementi nella trasposta ----
-\fill[black!85] (12.5,-3.5) circle (0.40);
+\fill[black!85] (12.5,-3.5) circle (0.35);
 \node[font=\small\bfseries, white] at (12.5,-3.5) {$s$};
-\node[below, font=\small, fill=white, fill opacity=0.9, inner sep=2pt]
-    at (12.5,-4.1) {$(3,\,0)$};
+\node[below, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
+    at (12.5,-4.1) {$(3, 0)$};
 
-\fill[black!85] (13.5,-5.5) circle (0.40);
+\fill[black!85] (13.5,-5.5) circle (0.35);
 \node[font=\small\bfseries, white] at (13.5,-5.5) {$x$};
-\node[below, font=\small, fill=white, fill opacity=0.9, inner sep=2pt]
-    at (13.5,-6.1) {$(5,\,1)$};
+\node[below, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
+    at (13.5,-6.1) {$(5, 1)$};
 
 \end{tikzpicture}
 }
@@ -711,7 +716,7 @@ trasposta[trans_r * orig_rows + trans_c] = tile[li_c * local_pitch + li_r];
 
 Il banco di lettura in fase~2 diventa $(\texttt{li\_c}\cdot(\texttt{lws}+1)+\texttt{li\_r})\bmod 32$. Con $\texttt{lws}=32$ si ha $\texttt{lws}+1=33$ e $\gcd(33,\,32)=1$: al variare di $\texttt{li\_c}$ i bank index assumono tutti valori distinti, eliminando il conflitto.
 
-Il principale svantaggio di questa soluzione è l'overhead di memoria: anziché \texttt{lws*lws} interi si alloca \texttt{(lws+1)*lws}, con un incremento di circa il 3\% per \texttt{lws=32}. La local memory aggiuntiva riduce il numero di work-group che possono coesistere sulla stessa compute unit (occupancy), limitando la capacità dell'hardware di mascherare le latenze con altri work-group attivi. La semplicità di implementazione è invece il punto di forza: sostituire \texttt{lws} con \texttt{local\_pitch} in due righe è immediato e non richiede di ragionare sul layout interno del tile.
+Il principale svantaggio di questa soluzione è l'overhead di memoria: anziché \texttt{lws*lws} interi se ne allocano \texttt{(lws+1)*lws}, con un incremento di circa il 3\% per \texttt{lws=32}. La local memory aggiuntiva riduce il numero di work-group che possono coesistere sulla stessa compute unit (occupancy), limitando la capacità dell'hardware di mascherare le latenze con altri work-group attivi. La semplicità di implementazione è invece il punto di forza: sostituire \texttt{lws} con \texttt{local\_pitch} in due righe è immediato e non richiede di ragionare sul layout interno del tile.
 
 % =====================================================
 \subsection{Soluzione 2: indirizzamento circolare}\label{sec:opencl_lmem_circular}
@@ -757,7 +762,7 @@ kernel void transpose_circ_k(global int * restrict trasposta,
 }
 \end{code}
 
-Il lato host non cambia rispetto a \texttt{transpose\_lmem\_k}: si alloca \texttt{lws*lws} interi. Il banco di lettura in fase~2 vale $(\texttt{li\_c}\cdot\texttt{lws}+(\texttt{li\_c}+\texttt{li\_r})\bmod\texttt{lws})\bmod 32$; con $\texttt{lws}=32$ si riduce a $(\texttt{li\_c}+\texttt{li\_r})\bmod 32$: tutti i bank index sono distinti al variare di $\texttt{li\_c}$.
+Il lato host non cambia rispetto a \texttt{transpose\_lmem\_k}: si allocano \texttt{lws*lws} interi. Il banco di lettura in fase~2 vale $(\texttt{li\_c}\cdot\texttt{lws}+(\texttt{li\_c}+\texttt{li\_r})\bmod\texttt{lws})\bmod 32$; con $\texttt{lws}=32$ si riduce a $(\texttt{li\_c}+\texttt{li\_r})\bmod 32$: tutti i bank index sono distinti al variare di $\texttt{li\_c}$.
 
 Per capire intuitivamente perché funziona, è utile osservare il layout fisico del tile dopo la fase~1 (figura~\ref{fig:circular_layout}). Senza circular shift ogni riga memorizza gli elementi nello stesso ordine: la colonna virtuale $l_c$ coincide sempre con la colonna fisica, che corrisponde al banco~$l_c$. Tutti gli elementi con la stessa colonna virtuale finiscono quindi nello stesso banco, producendo un conflitto in lettura. Con il circular shift, la riga~$l_r$ memorizza i propri elementi con uno shift di $l_r$ posizioni verso destra (modulo \texttt{lws}): la colonna virtuale~1, ad esempio, si trova in B1 per $l_r=0$, in B2 per $l_r=1$, in B3 per $l_r=2$ e in B0 per $l_r=3$. Ogni elemento della stessa colonna virtuale risiede in un banco diverso, così le letture simultanee di fase~2 colpiscono banchi tutti distinti.
 
@@ -850,4 +855,4 @@ Per capire intuitivamente perché funziona, è utile osservare il layout fisico 
 \label{fig:circular_layout}
 \end{figure}
 
-A differenza del padding, l'indirizzamento circolare non richiede alcuna memoria aggiuntiva e lascia inalterata l'occupancy. Il calcolo di \texttt{circular\_index} introduce una sola addizione e un confronto per work-item, un costo trascurabile rispetto ai guadagni. Le prestazioni risultanti sono molto vicine a quelle del kernel \texttt{init}, che non esegue alcuna trasposizione.
+A differenza del padding, l'indirizzamento circolare non richiede alcuna memoria aggiuntiva e lascia inalterata l'occupancy. Il calcolo di \texttt{circular\_index} introduce una sola addizione e un confronto per work-item, un costo trascurabile rispetto ai guadagni. Le prestazioni risultanti sono molto vicine a quelle del kernel \texttt{init}.
