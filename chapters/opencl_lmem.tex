@@ -359,3 +359,500 @@ clSetKernelArg(smooth_k, arg_index++, lws_cli * sizeof(cl_int), NULL);
 cl_event smooth_evt = smooth(que, smooth_k, d_out, d_in,
                               nels/4, lws, init_evt);
 \end{code}
+
+% =====================================================
+\section{Trasposizione di una matrice}\label{sec:opencl_lmem_transpose}
+% =====================================================
+
+La trasposizione di una matrice $R \times C$ produce una matrice $C \times R$ in cui l'elemento in posizione $(r,\,c)$ nella matrice originale compare in posizione $(c,\,r)$ nella trasposta. L'implementazione più naturale (imbarazzantemente parallela) assegna un work-item per elemento della trasposta, usando \texttt{get\_global\_id(0)} per la colonna (asse rapido) e \texttt{get\_global\_id(1)} per la riga.
+
+\begin{code}[caption={Kernel naive di trasposizione}, label={code:transpose_naive}]
+/* t_rows, t_cols: righe e colonne della trasposta */
+kernel void transpose_k(global int * restrict trasposta,
+                        global const int * restrict originale,
+                        int t_rows, int t_cols)
+{
+    int t_c = get_global_id(0); /* colonna della trasposta */
+    int t_r = get_global_id(1); /* riga della trasposta */
+
+    if (t_r < t_rows && t_c < t_cols)
+        trasposta[t_r * t_cols + t_c] = originale[t_c * t_rows + t_r];
+}
+\end{code}
+
+La coalescenza degli accessi è asimmetrica:
+
+\begin{description}
+    \item[Scritture] L'indice lineare \texttt{t\_r\,*\,t\_cols\,+\,t\_c} varia di~1 al variare di \texttt{t\_c} (asse~0, il più rapido): le scritture su \texttt{trasposta} sono coalescenti.
+
+    \item[Letture] L'indice lineare \texttt{t\_c\,*\,t\_rows\,+\,t\_r} varia di \texttt{t\_rows} al variare di \texttt{t\_c}: le letture da \texttt{originale} hanno stride pari al numero di righe dell'originale e non sono coalescenti.
+\end{description}
+
+Invertendo gli assi --- \texttt{get\_global\_id(0)} per la riga, \texttt{get\_global\_id(1)} per la colonna --- si ottiene la situazione opposta: letture coalescenti ma scritture non coalescenti. In entrambe le varianti uno dei due accessi ha stride.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.82\textwidth}{!}{%
+\begin{tikzpicture}[x=0.6cm, y=0.6cm]
+
+%% ---- Matrice originale (x=[0,6], y=[0,-6]) ----
+\fill[red!50]   (0, 0) rectangle (3,-3);
+\fill[blue!55]  (3, 0) rectangle (6,-3);
+\fill[olive!65] (0,-3) rectangle (3,-6);
+\foreach \c in {0,...,6} \draw[gray!55, thin] (\c,0)--(\c,-6);
+\foreach \r in {0,...,6} \draw[gray!55, thin] (0,-\r)--(6,-\r);
+\draw[black!70, thick] (0,0) rectangle (6,-6);
+\draw[black!45, semithick, dashed] (3,0)--(3,-6);
+\draw[black!45, semithick, dashed] (0,-3)--(6,-3);
+\node[above, font=\small\bfseries] at (3,0.5) {Originale};
+\node[font=\small\bfseries, text=white]  at (1.5,-1.5) {$(0,0)$};
+\node[font=\small\bfseries, text=white]  at (4.5,-1.5) {$(0,1)$};
+\node[font=\small\bfseries, text=white]  at (1.5,-4.5) {$(1,0)$};
+\node[font=\small\bfseries]              at (4.5,-4.5) {$(1,1)$};
+
+%% ---- Matrice trasposta (x=[10,16], y=[0,-6]) ----
+\fill[red!50]   (10, 0) rectangle (13,-3);
+\fill[olive!65] (13, 0) rectangle (16,-3);
+\fill[blue!55]  (10,-3) rectangle (13,-6);
+\foreach \c in {0,...,6} \draw[gray!55, thin] ({10+\c},0)--({10+\c},-6);
+\foreach \r in {0,...,6} \draw[gray!55, thin] (10,-\r)--(16,-\r);
+\draw[black!70, thick] (10,0) rectangle (16,-6);
+\draw[black!45, semithick, dashed] (13,0)--(13,-6);
+\draw[black!45, semithick, dashed] (10,-3)--(16,-3);
+\node[above, font=\small\bfseries] at (13,0.5) {Trasposta};
+\node[font=\small\bfseries, text=white]  at (11.5,-1.5) {$(0,0)$};
+\node[font=\small\bfseries, text=white]  at (14.5,-1.5) {$(0,1)$};
+\node[font=\small\bfseries, text=white]  at (11.5,-4.5) {$(1,0)$};
+\node[font=\small\bfseries]              at (14.5,-4.5) {$(1,1)$};
+
+%% ---- Frecce tra blocchi fuori diagonale ----
+\draw[->, blue!75!black, very thick, bend left=22]
+    (4.5,-1.5) to (11.5,-4.5);
+\draw[->, olive!80!black, very thick, bend right=22]
+    (1.5,-4.5) to (14.5,-1.5);
+
+\end{tikzpicture}
+}
+\caption{Trasposizione di una matrice $6\times6$ con blocchi $3\times3$ (\texttt{lws}$=3$, quattro work-group). Le coordinate $(g_r,\,g_c)$ identificano il blocco nella griglia di work-group. I blocchi diagonali rimangono in posizione; i blocchi fuori diagonale si scambiano. Ciascun blocco corrisponde al tile elaborato da un work-group.}
+\label{fig:trasposizione_blocchi}
+\end{figure}
+
+Il benchmark misura la banda passante come $2 \times \texttt{memsize}$: si legge l'intera matrice originale e si scrive l'intera trasposta.
+
+% =====================================================
+\section{Letture coalescenti vs scritture coalescenti}\label{sec:opencl_lmem_coal_rw}
+% =====================================================
+
+Quando non è possibile avere entrambi gli accessi coalescenti, conviene privilegiare le \emph{letture}. Le scritture in memoria non possono iniziare finché le letture necessarie non sono terminate: il tempo di lettura è sul percorso critico, quello di scrittura no. Ottimizzare le letture riduce quindi direttamente la latenza complessiva del kernel.
+
+Tuttavia, anche nel caso ottimale con letture coalescenti, il kernel naive lascia le scritture con stride. La local memory consente di eliminare lo stride su \emph{entrambi} gli accessi.
+
+% =====================================================
+\section{Trasposizione con tile in local memory}\label{sec:opencl_lmem_transpose_tile}
+% =====================================================
+
+L'idea è dividere la matrice in \emph{tile} quadrati di \texttt{lws}$\times$\texttt{lws} elementi, uno per work-group. Ogni work-group esegue tre fasi:
+
+\begin{enumerate}
+    \item Carica il proprio tile dall'originale nella local memory con \emph{letture coalescenti}.
+    \item Sincronizza con una barriera.
+    \item Scrive il tile nella posizione trasposta della matrice risultato con \emph{scritture coalescenti}, leggendo dalla local memory con gli indici locali scambiati.
+\end{enumerate}
+
+\paragraph{Fase~1 (caricamento).} Il work-item con indici locali $(l_c,\,l_r)$ nel work-group $(g_c,\,g_r)$ legge dall'originale la posizione globale $(\text{orig\_r}, \text{orig\_c}) = (g_r \cdot \texttt{lws} + l_r,\; g_c \cdot \texttt{lws} + l_c)$. Al variare di $l_c$ (asse~0), l'indice lineare $\text{orig\_r} \cdot C + \text{orig\_c}$ varia di~1: le letture sono coalescenti. Il valore viene scritto in \texttt{tile[$l_r \cdot \texttt{lws} + l_c$]}.
+
+\paragraph{Fase~2 (scrittura).} Il work-group che ha letto il blocco $(g_r, g_c)$ dell'originale scrive nel blocco $(g_c, g_r)$ della trasposta (coordinate di work-group scambiate). Ogni work-item $(l_c,\,l_r)$ legge \texttt{tile[$l_c \cdot \texttt{lws} + l_r$]} (indici locali scambiati rispetto alla fase~1) e scrive in posizione $(\text{trans\_r}, \text{trans\_c}) = (g_c \cdot \texttt{lws} + l_r,\; g_r \cdot \texttt{lws} + l_c)$. Al variare di $l_c$ (asse~0), l'indice lineare $\text{trans\_r} \cdot R + \text{trans\_c}$ varia di~1: le scritture sono coalescenti.
+
+\begin{figure}[htbp]
+\centering
+% Ridotto a 0.85 per renderlo più piccolo e gestibile
+\resizebox{0.85\textwidth}{!}{%
+\begin{tikzpicture}[x=0.6cm, y=0.6cm]
+
+%% ---- Matrice originale (x=[0,6]) ----
+\fill[red!50]   (0, 0) rectangle (3,-3);
+\fill[blue!55]  (3, 0) rectangle (6,-3);
+\fill[olive!65] (0,-3) rectangle (3,-6);
+\foreach \c in {0,...,6} \draw[gray!55, thin] (\c,0)--(\c,-6);
+\foreach \r in {0,...,6} \draw[gray!55, thin] (0,-\r)--(6,-\r);
+\draw[black!70, thick] (0,0) rectangle (6,-6);
+\draw[black!45, semithick, dashed] (3,0)--(3,-6);
+\draw[black!45, semithick, dashed] (0,-3)--(6,-3);
+\node[above, font=\small\bfseries] at (3,1.3) {Originale};
+
+%% ---- Etichetta Fase 1 (Spostata più vicina alla matrice originale) ----
+\node[font=\footnotesize\bfseries, black!80, align=center,
+      draw=gray!50, fill=white, inner sep=2pt, rounded corners=2pt]
+    at (6.5, 1.3) {Fase~1\\ letture coal.};
+
+%% ---- Tile (local memory): x=[7.5,10.5], y=[-1.5,-4.5] ----
+\fill[white] (7.5,-1.5) rectangle (10.5,-4.5);
+\foreach \c in {0,...,3} \draw[black!55, thin] ({7.5+\c},-1.5)--({7.5+\c},-4.5);
+\foreach \r in {0,...,3} \draw[black!55, thin] (7.5,{-1.5-\r})--(10.5,{-1.5-\r});
+\draw[black!75, thick] (7.5,-1.5) rectangle (10.5,-4.5);
+\node[above, font=\small\bfseries] at (9,-1.3) {Local memory};
+\node[below, font=\small] at (9,-4.7) {\texttt{tile[LWS][LWS]}};
+
+%% ---- Matrice trasposta (x=[12,18]) ----
+\fill[red!50]   (12, 0) rectangle (15,-3);
+\fill[olive!65] (15, 0) rectangle (18,-3);
+\fill[blue!55]  (12,-3) rectangle (15,-6);
+\foreach \c in {0,...,6} \draw[gray!55, thin] ({12+\c},0)--({12+\c},-6);
+\foreach \r in {0,...,6} \draw[gray!55, thin] (12,-\r)--(18,-\r);
+\draw[black!70, thick] (12,0) rectangle (18,-6);
+\draw[black!45, semithick, dashed] (15,0)--(15,-6);
+\draw[black!45, semithick, dashed] (12,-3)--(18,-3);
+\node[above, font=\small\bfseries] at (15,1.3) {Trasposta};
+
+%% ---- Elemento s: (r=0, c=3) ----
+\fill[black!85] (3.5,-0.5) circle (0.35);
+\node[font=\small\bfseries, white] at (3.5,-0.5) {$s$};
+\node[above, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
+    at (3.5, 0.1) {$(0,\,3)$};
+
+%% Elemento x: (r=1, c=5) ----
+\fill[black!85] (5.5,-1.5) circle (0.35);
+\node[font=\small\bfseries, white] at (5.5,-1.5) {$x$};
+\node[above, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
+    at (5.5,-0.9) {$(1,\,5)$};
+
+%% ---- Frecce load ----
+\draw[->, thick, black!75] (3.9,-0.5) to[out=0, in=165] (7.5,-2);
+\draw[->, thick, black!75] (5.9,-1.5) to[out=0, in=165] (7.5,-3);
+
+%% ---- Percorso nella tile ----
+\draw[gray!55, thin, dashed] (7.5,-2) -- (10.5,-2);
+\draw[gray!55, thin, dashed] (7.5,-3) -- (10.5,-4);
+
+%% ---- Etichetta Fase 2 ----
+\node[font=\footnotesize\bfseries, olive!80!black, align=center,
+      draw=gray!50, fill=white, inner sep=2pt, rounded corners=2pt]
+    at (10.5,-7.0) {Fase~2\\ scritture coal.};
+
+%% ---- Frecce store ----
+\draw[->, thick, olive!80!black] (10.5,-2) to[out=15, in=155] (12.5,-3.5);
+\draw[->, thick, olive!80!black] (10.5,-4) to[out=15, in=155] (13.5,-5.5);
+
+%% ---- Elementi nella trasposta ----
+\fill[black!85] (12.5,-3.5) circle (0.35);
+\node[font=\small\bfseries, white] at (12.5,-3.5) {$s$};
+\node[below, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
+    at (12.5,-4.1) {$(3, 0)$};
+
+\fill[black!85] (13.5,-5.5) circle (0.35);
+\node[font=\small\bfseries, white] at (13.5,-5.5) {$x$};
+\node[below, font=\footnotesize, fill=white, fill opacity=0.7, inner sep=1pt] 
+    at (13.5,-6.1) {$(5, 1)$};
+
+\end{tikzpicture}
+}
+\caption{Trasposizione con tile in local memory. Si tracciano due elementi del blocco blu: $s\,(0,3)$ (diagonale del tile, $l_c=l_r=0$) e $x\,(1,5)$ (fuori diagonale, $l_r=1,\,l_c=2$). Le frecce scure mostrano la \emph{Fase~1} (letture coalescenti dall'originale al tile); le linee tratteggiate il percorso interno al tile (orizzontale per $s$, diagonale per $x$ — lo scambio $r\!\leftrightarrow\!c$ avviene qui); le frecce dorate la \emph{Fase~2} (scritture coalescenti verso la trasposta). Le coordinate $(r,c)$ si scambiano: $(0,3)\!\to\!(3,0)$ e $(1,5)\!\to\!(5,1)$.}
+\label{fig:trasposizione_tile}
+\end{figure}
+
+In sintesi, in fase~2 ogni work-item scrive il valore che, in fase~1, è stato letto dal work-item con indici locali scambiati $(l_r, l_c)$. La dimensione del tile è un trade-off: più è grande, più si riduce il numero di blocchi fuori diagonale (quelli con accessi non coalescenti) e più si aumenta la banda passante; ma più è grande, meno work-group possono essere attivi contemporaneamente sulla stessa compute unit, riducendo l'occupazione e la capacità di nascondere la latenza delle letture dalla global memory. Tipicamente si sceglie \texttt{lws} pari alla dimensione del warp/wavefront (32 o 64).
+
+\begin{code}[caption={Kernel di trasposizione con tile in local memory}, label={code:transpose_lmem}]
+
+/* Richiede orig_rows e orig_cols multipli di lws */
+kernel void transpose_lmem_k(global int * restrict trasposta,
+                              global const int * restrict originale,
+                              int orig_rows, int orig_cols,
+                              local int * restrict tile)
+{
+    int li_c = get_local_id(0);
+    int li_r = get_local_id(1);
+    int lws  = get_local_size(0); /* work-group quadrato */
+
+    int orig_c = get_group_id(0) * lws + li_c;
+    int orig_r = get_group_id(1) * lws + li_r;
+
+    /* Fase 1: caricamento con letture coalescenti */
+    tile[li_r * lws + li_c] = originale[orig_r * orig_cols + orig_c];
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    /* Fase 2: work-group trasposto, indici locali scambiati */
+    int trans_r = get_group_id(0) * lws + li_r;
+    int trans_c = get_group_id(1) * lws + li_c;
+
+    trasposta[trans_r * orig_rows + trans_c] = tile[li_c * lws + li_r];
+}
+\end{code}
+
+Le coordinate del work-group sono scambiate tra le due fasi: \texttt{get\_group\_id(0)} contribuisce all'indice di riga nella fase~2 anziché di colonna come nella fase~1. Gli indici locali $(l_c, l_r)$ mantengono invece la loro direzione rispetto agli assi. Se \texttt{get\_group\_id()} non fosse disponibile, si ricava come \texttt{get\_global\_id(d)\,/\,get\_local\_size(d)}.
+
+Lato host la differenza rispetto agli altri kernel è la griglia bidimensionale e l'allocazione del tile come local memory:
+
+\begin{code}[caption={Lancio del kernel di trasposizione con tile}, label={code:transpose_host}]
+const size_t lws[2] = { lws_cli, lws_cli }; /* work-group quadrato */
+const size_t gws[2] = { round_mul_up(orig_cols, lws[0]),
+                         round_mul_up(orig_rows, lws[1]) };
+
+cl_uint arg = 0;
+clSetKernelArg(k, arg++, sizeof(cl_mem), &trasposta);
+clSetKernelArg(k, arg++, sizeof(cl_mem), &originale);
+clSetKernelArg(k, arg++, sizeof(cl_int), &orig_rows);
+clSetKernelArg(k, arg++, sizeof(cl_int), &orig_cols);
+clSetKernelArg(k, arg++, lws_cli * lws_cli * sizeof(cl_int), NULL);
+
+clEnqueueNDRangeKernel(que, k, 2, NULL, gws, lws, ...);
+
+/* benchmark: lettura originale + scrittura trasposta = 2 * memsize */
+printf("transpose: %.4gGB/s\n", 2.0 * memsize / (double)ns);
+\end{code}
+
+% =====================================================
+\section{Bank conflict nella local memory}\label{sec:opencl_lmem_bank_conflict}
+% =====================================================
+
+La local memory è fisicamente realizzata con \emph{banchi} di memoria su chip: strutture di 32~bit (un intero) indirizzate in modo \emph{trasversale}, ovvero indirizzi consecutivi cadono su banchi consecutivi. In questo schema ogni colonna del tile (con indice fisico~$c$) corrisponde al banco $c \bmod N_b$, dove $N_b$ è il numero di banchi (tipicamente~32).
+
+\begin{description}
+    \item[Accessi ottimali] Work-item diversi dello stesso sottogruppo che accedono a \emph{banchi diversi} vengono serviti in un unico ciclo di clock.
+
+    \item[Bank conflict] Se due work-item dello stesso sottogruppo richiedono lo \emph{stesso banco}, gli accessi vengono serializzati: il banco risponde a un work-item alla volta, con un ciclo di clock aggiuntivo per ogni conflitto.
+
+    \item[Broadcast] Eccezione: se tutti i work-item leggono lo stesso identico indirizzo, la local memory invia il dato in broadcast senza alcun conflitto.
+\end{description}
+
+Analizziamo il kernel \texttt{transpose\_lmem\_k} con $\texttt{lws} = 32$. Nella \emph{fase~1} l'indice fisico è \texttt{tile[li\_r*lws\,+\,li\_c]}: al variare di \texttt{li\_c} il banco vale $(\texttt{li\_r}\cdot 32 + \texttt{li\_c}) \bmod 32 = \texttt{li\_c}$, quindi ogni work-item accede a un banco diverso (nessun conflitto). Nella \emph{fase~2} l'indice diventa \texttt{tile[li\_c*lws\,+\,li\_r]}: al variare di \texttt{li\_c} il banco vale $(\texttt{li\_c}\cdot 32 + \texttt{li\_r}) \bmod 32 = \texttt{li\_r}$, costante per tutti i work-item. Tutti accedono allo stesso banco~$\texttt{li\_r}$: \textbf{bank conflict}.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.84\textwidth}{!}{%
+\begin{tikzpicture}[x=0.72cm, y=0.72cm]
+
+%% === PANNELLO SINISTRO: bank conflict ===
+\fill[blue!25]   (0, 0) rectangle (1,-4);
+\fill[red!30]    (1, 0) rectangle (2,-4);
+\fill[olive!40]  (2, 0) rectangle (3,-4);
+\fill[orange!35] (3, 0) rectangle (4,-4);
+
+%% Fase 2 con li_r=1: tile[li_c*4+1] → tutte nella colonna 1 = banco B1
+\fill[red!70] (1, 0) rectangle (2,-1);
+\fill[red!70] (1,-1) rectangle (2,-2);
+\fill[red!70] (1,-2) rectangle (2,-3);
+\fill[red!70] (1,-3) rectangle (2,-4);
+
+\foreach \c in {0,...,4} \draw[gray!60, thin] (\c,0)--(\c,-4);
+\foreach \r in {0,...,4} \draw[gray!60, thin] (0,-\r)--(4,-\r);
+\draw[black!70, thick] (0,0) rectangle (4,-4);
+
+\foreach \b/\c in {0/0,1/1,2/2,3/3}
+    \node[above, font=\small\bfseries] at (\c+0.5, 0.15) {B\b};
+
+\foreach \r in {0,...,3}
+    \node[left, font=\scriptsize] at (-0.2,-\r-0.5) {$l_c{=}\r$};
+
+\node[above, font=\small\bfseries] at (2, 0.7) {Senza soluzione};
+\node[below, font=\small\bfseries, red!70!black] at (2,-4.5) {Bank conflict};
+\node[below, font=\scriptsize, black!70]          at (2,-5.4) {tutti in B1};
+
+%% === PANNELLO DESTRO: indirizzamento circolare ===
+\begin{scope}[xshift=5.5cm]
+
+\fill[blue!25]   (0, 0) rectangle (1,-4);
+\fill[red!30]    (1, 0) rectangle (2,-4);
+\fill[olive!40]  (2, 0) rectangle (3,-4);
+\fill[orange!35] (3, 0) rectangle (4,-4);
+
+%% Fase 2 con circular shift e li_r=1:
+%% l_c=0 → circ=(0+1)%4=1 → tile[0,1] = B1
+%% l_c=1 → circ=(1+1)%4=2 → tile[1,2] = B2
+%% l_c=2 → circ=(2+1)%4=3 → tile[2,3] = B3
+%% l_c=3 → circ=(3+1)%4=0 → tile[3,0] = B0
+\fill[red!70]    (1, 0) rectangle (2,-1);
+\fill[olive!70]  (2,-1) rectangle (3,-2);
+\fill[orange!65] (3,-2) rectangle (4,-3);
+\fill[blue!55]   (0,-3) rectangle (1,-4);
+
+\foreach \c in {0,...,4} \draw[gray!60, thin] (\c,0)--(\c,-4);
+\foreach \r in {0,...,4} \draw[gray!60, thin] (0,-\r)--(4,-\r);
+\draw[black!70, thick] (0,0) rectangle (4,-4);
+
+\foreach \b/\c in {0/0,1/1,2/2,3/3}
+    \node[above, font=\small\bfseries] at (\c+0.5, 0.15) {B\b};
+
+\foreach \r in {0,...,3}
+    \node[left, font=\scriptsize] at (-0.2,-\r-0.5) {$l_c{=}\r$};
+
+\node[above, font=\small\bfseries] at (2, 0.7) {Con indirizzamento circolare};
+\node[below, font=\small\bfseries, green!50!black] at (2,-4.5) {Nessun conflitto};
+\node[below, font=\scriptsize, black!70]           at (2,-5.4) {banchi diversi};
+
+\end{scope}
+
+\end{tikzpicture}
+}
+\caption{Bank conflict in fase~2 di \texttt{transpose\_lmem\_k} (tile $4\times4$, $l_r=1$ fissato). Sinistra: senza soluzione, tutti e quattro i work-item leggono dalla colonna~B1 → serializzazione. Destra: con indirizzamento circolare, ogni work-item accede a un banco diverso → accessi paralleli.}
+\label{fig:bank_conflict}
+\end{figure}
+
+% =====================================================
+\subsection{Soluzione 1: padding}\label{sec:opencl_lmem_padding}
+% =====================================================
+
+L'idea è allocare il tile con una colonna extra di \emph{padding} in modo che elementi della stessa colonna concettuale finiscano su banchi diversi.
+
+\paragraph{Lato host.} Si alloca \texttt{(lws+1)*lws} interi invece di \texttt{lws*lws}:
+
+\begin{code}[caption={Allocazione del tile con padding}, label={code:tile_padding_host}]
+clSetKernelArg(k, arg++, (lws_cli + 1) * lws_cli * sizeof(cl_int), NULL);
+\end{code}
+
+\paragraph{Nel kernel.} Si introduce \texttt{local\_pitch = lws + 1} come passo di riga:
+
+\begin{code}[caption={Accesso al tile con padding}, label={code:tile_padding_kernel}]
+int local_pitch = lws + 1;   /* colonna extra di padding */
+
+/* Fase 1: letture coalescenti */
+tile[li_r * local_pitch + li_c] = originale[orig_r * orig_cols + orig_c];
+barrier(CLK_LOCAL_MEM_FENCE);
+
+/* Fase 2: scritture coalescenti */
+trasposta[trans_r * orig_rows + trans_c] = tile[li_c * local_pitch + li_r];
+\end{code}
+
+Il banco di lettura in fase~2 diventa $(\texttt{li\_c}\cdot(\texttt{lws}+1)+\texttt{li\_r})\bmod 32$. Con $\texttt{lws}=32$ si ha $\texttt{lws}+1=33$ e $\gcd(33,\,32)=1$: al variare di $\texttt{li\_c}$ i bank index assumono tutti valori distinti, eliminando il conflitto.
+
+Il principale svantaggio di questa soluzione è l'overhead di memoria: anziché \texttt{lws*lws} interi se ne allocano \texttt{(lws+1)*lws}, con un incremento di circa il 3\% per \texttt{lws=32}. La local memory aggiuntiva riduce il numero di work-group che possono coesistere sulla stessa compute unit (occupancy), limitando la capacità dell'hardware di mascherare le latenze con altri work-group attivi. La semplicità di implementazione è invece il punto di forza: sostituire \texttt{lws} con \texttt{local\_pitch} in due righe è immediato e non richiede di ragionare sul layout interno del tile.
+
+% =====================================================
+\subsection{Soluzione 2: indirizzamento circolare}\label{sec:opencl_lmem_circular}
+% =====================================================
+
+La colonna fisica in cui viene scritto un elemento è shiftata circolarmente in base alla riga, senza allocare memoria aggiuntiva:
+
+\begin{code}[caption={Calcolo dell'indice circolare}, label={code:circular_index}]
+int circular_index = li_c + li_r;
+if (circular_index >= lws) circular_index -= lws; /* equivalente a % lws */
+\end{code}
+
+La simmetria $\texttt{li\_c}+\texttt{li\_r}=\texttt{li\_r}+\texttt{li\_c}$ garantisce che lo stesso \texttt{circular\_index} funzioni sia in fase~1 che in fase~2: l'elemento $(l_r,l_c)$ è archiviato in \texttt{tile[l\_r*lws\,+\,circ]}, e in fase~2 il work-item con \texttt{li\_c} diverso usa lo stesso \texttt{circ} per trovarlo.
+
+\begin{code}[caption={Kernel di trasposizione con indirizzamento circolare}, label={code:transpose_circ}]
+kernel void transpose_circ_k(global int * restrict trasposta,
+                              global const int * restrict originale,
+                              int orig_rows, int orig_cols,
+                              local int * restrict tile)
+{
+    int li_c = get_local_id(0);
+    int li_r = get_local_id(1);
+    int lws  = get_local_size(0);
+
+    int orig_c = get_group_id(0) * lws + li_c;
+    int orig_r = get_group_id(1) * lws + li_r;
+
+    int circular_index = li_c + li_r;
+    if (circular_index >= lws) circular_index -= lws;
+
+    /* Fase 1: caricamento con letture coalescenti */
+    if (orig_r < orig_rows && orig_c < orig_cols)
+        tile[li_r * lws + circular_index] = originale[orig_r * orig_cols + orig_c];
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    int trans_r = get_group_id(0) * lws + li_r;
+    int trans_c = get_group_id(1) * lws + li_c;
+
+    /* Fase 2: indici work-group trasposti, lettura con indice circolare */
+    if (trans_r < orig_cols && trans_c < orig_rows)
+        trasposta[trans_r * orig_rows + trans_c] = tile[li_c * lws + circular_index];
+}
+\end{code}
+
+Il lato host non cambia rispetto a \texttt{transpose\_lmem\_k}: si allocano \texttt{lws*lws} interi. Il banco di lettura in fase~2 vale $(\texttt{li\_c}\cdot\texttt{lws}+(\texttt{li\_c}+\texttt{li\_r})\bmod\texttt{lws})\bmod 32$; con $\texttt{lws}=32$ si riduce a $(\texttt{li\_c}+\texttt{li\_r})\bmod 32$: tutti i bank index sono distinti al variare di $\texttt{li\_c}$.
+
+Per capire intuitivamente perché funziona, è utile osservare il layout fisico del tile dopo la fase~1 (figura~\ref{fig:circular_layout}). Senza circular shift ogni riga memorizza gli elementi nello stesso ordine: la colonna virtuale $l_c$ coincide sempre con la colonna fisica, che corrisponde al banco~$l_c$. Tutti gli elementi con la stessa colonna virtuale finiscono quindi nello stesso banco, producendo un conflitto in lettura. Con il circular shift, la riga~$l_r$ memorizza i propri elementi con uno shift di $l_r$ posizioni verso destra (modulo \texttt{lws}): la colonna virtuale~1, ad esempio, si trova in B1 per $l_r=0$, in B2 per $l_r=1$, in B3 per $l_r=2$ e in B0 per $l_r=3$. Ogni elemento della stessa colonna virtuale risiede in un banco diverso, così le letture simultanee di fase~2 colpiscono banchi tutti distinti.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.82\textwidth}{!}{%
+\begin{tikzpicture}[x=0.85cm, y=0.85cm]
+
+%% === PANNELLO SINISTRO: senza circular shift ===
+\fill[blue!22]   (0, 0) rectangle (1,-4);
+\fill[red!28]    (1, 0) rectangle (2,-4);
+\fill[olive!38]  (2, 0) rectangle (3,-4);
+\fill[orange!33] (3, 0) rectangle (4,-4);
+
+%% Contenuto cella = indice di colonna virtuale (= fisico, senza shift)
+\foreach \r in {0,...,3} {
+    \foreach \c in {0,...,3} {
+        \node[font=\small] at (\c+0.5,-\r-0.5) {\c};
+    }
+}
+
+\foreach \c in {0,...,4} \draw[gray!60, thin] (\c,0)--(\c,-4);
+\foreach \r in {0,...,4} \draw[gray!60, thin] (0,-\r)--(4,-\r);
+\draw[black!70, thick] (0,0) rectangle (4,-4);
+
+%% Colonna virtuale l_c=1: striscia verticale in B1
+\draw[red!75!black, very thick] (1,0) rectangle (2,-4);
+
+\foreach \b/\c in {0/0,1/1,2/2,3/3}
+    \node[above, font=\small\bfseries] at (\c+0.5, 0.1) {B\b};
+
+\foreach \r in {0,...,3}
+    \node[left, font=\scriptsize] at (-0.2,-\r-0.5) {$l_r{=}\r$};
+
+\node[above, font=\small\bfseries] at (2, 0.7) {Senza circular shift};
+\node[below, font=\small\bfseries, red!70!black, align=center] at (2,-4.6)
+    {$l_c{=}1$ sempre in B1};
+
+%% === PANNELLO DESTRO: con circular shift ===
+\begin{scope}[xshift=5.8cm]
+
+\fill[blue!22]   (0, 0) rectangle (1,-4);
+\fill[red!28]    (1, 0) rectangle (2,-4);
+\fill[olive!38]  (2, 0) rectangle (3,-4);
+\fill[orange!33] (3, 0) rectangle (4,-4);
+
+%% Contenuto cella = colonna virtuale al variare del shift
+%% virtuale(li_r, phys_col) = (phys_col - li_r + 4) % 4
+%% Riga 0 (shift=0): 0 1 2 3
+\node[font=\small] at (0.5,-0.5) {0}; \node[font=\small] at (1.5,-0.5) {1};
+\node[font=\small] at (2.5,-0.5) {2}; \node[font=\small] at (3.5,-0.5) {3};
+%% Riga 1 (shift=1): 3 0 1 2
+\node[font=\small] at (0.5,-1.5) {3}; \node[font=\small] at (1.5,-1.5) {0};
+\node[font=\small] at (2.5,-1.5) {1}; \node[font=\small] at (3.5,-1.5) {2};
+%% Riga 2 (shift=2): 2 3 0 1
+\node[font=\small] at (0.5,-2.5) {2}; \node[font=\small] at (1.5,-2.5) {3};
+\node[font=\small] at (2.5,-2.5) {0}; \node[font=\small] at (3.5,-2.5) {1};
+%% Riga 3 (shift=3): 1 2 3 0
+\node[font=\small] at (0.5,-3.5) {1}; \node[font=\small] at (1.5,-3.5) {2};
+\node[font=\small] at (2.5,-3.5) {3}; \node[font=\small] at (3.5,-3.5) {0};
+
+\foreach \c in {0,...,4} \draw[gray!60, thin] (\c,0)--(\c,-4);
+\foreach \r in {0,...,4} \draw[gray!60, thin] (0,-\r)--(4,-\r);
+\draw[black!70, thick] (0,0) rectangle (4,-4);
+
+%% Colonna virtuale l_c=1: pattern diagonale
+\draw[green!55!black, very thick] (1, 0) rectangle (2,-1);   % riga0, B1
+\draw[green!55!black, very thick] (2,-1) rectangle (3,-2);   % riga1, B2
+\draw[green!55!black, very thick] (3,-2) rectangle (4,-3);   % riga2, B3
+\draw[green!55!black, very thick] (0,-3) rectangle (1,-4);   % riga3, B0
+
+\foreach \b/\c in {0/0,1/1,2/2,3/3}
+    \node[above, font=\small\bfseries] at (\c+0.5, 0.1) {B\b};
+
+\foreach \r in {0,...,3}
+    \node[left, font=\scriptsize] at (-0.2,-\r-0.5) {$l_r{=}\r$};
+
+\foreach \r in {0,...,3}
+    \node[right, font=\tiny, black!55] at (4.1,-\r-0.5) {\textit{+\r}};
+
+\node[above, font=\small\bfseries] at (2, 0.7) {Con circular shift};
+\node[below, font=\small\bfseries, green!55!black, align=center] at (2,-4.6)
+    {$l_c{=}1$ su banchi diversi};
+
+\end{scope}
+
+\end{tikzpicture}
+}
+\caption{Layout fisico del tile $4\times4$ in fase~1. Ogni cella mostra l'indice di colonna virtuale ($l_c$) memorizzato in quella posizione fisica. I bordi evidenziati tracciano gli elementi con $l_c{=}1$, che vengono letti tutti simultaneamente in fase~2 con $l_r{=}1$ fisso. Senza circular shift cadono nella stessa colonna (B1); con circular shift ogni riga applica uno shift crescente (annotazioni \textit{+r} a destra), distribuendo $l_c{=}1$ su quattro banchi distinti.}
+\label{fig:circular_layout}
+\end{figure}
+
+A differenza del padding, l'indirizzamento circolare non richiede alcuna memoria aggiuntiva e lascia inalterata l'occupancy. Il calcolo di \texttt{circular\_index} introduce una sola addizione e un confronto per work-item, un costo trascurabile rispetto ai guadagni. Le prestazioni risultanti sono molto vicine a quelle del kernel \texttt{init}.
