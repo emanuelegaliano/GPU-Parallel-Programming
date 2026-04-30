@@ -1,0 +1,25 @@
+\chapter{Immagini in OpenCL}\label{sec:opencl_images}
+
+Le \emph{immagini} sono un meccanismo di OpenCL per gestire dati multidimensionali progettato specificamente per le immagini digitali. A differenza dei buffer, non tutto l'hardware supporta la scrittura su immagini nei kernel, e quando lo fa è possibile solo per determinati formati.
+
+\section{Formato dell'immagine}
+Alla creazione si specificano due componenti:
+
+\begin{description}
+    \item[Data type] Definisce quanti bit sono disponibili per ogni canale e come il dato è codificato:
+    \begin{itemize}
+        \item \texttt{CL\_UNSIGNED\_INT8} — intero senza segno a 8~bit per canale, letto come intero.
+        \item \texttt{CL\_UNORM\_INT8} — stesso layout binario, ma il valore letto nel kernel è un \texttt{float} normalizzato in $[0.0,\,1.0]$ (0 → 0.0, 255 → 1.0).
+        \item \texttt{CL\_UNORM\_INT\_101010} — 10~bit per canale colore, restituito come \texttt{float} normalizzato.
+    \end{itemize}
+
+    \item[Channel order] Indica quanti canali sono presenti e come sono interpretati:
+    \begin{itemize}
+        \item \texttt{CL\_R} — un solo canale (rosso); il valore è passato come prima componente del vettore letto.
+        \item \texttt{CL\_INTENSITY} — un solo valore fisico replicato su tutti e quattro i canali in lettura.
+        \item \texttt{CL\_LUMINANCE} — un solo valore replicato sui tre canali colore (R, G, B); il canale alpha è 1.0.
+    \end{itemize}
+\end{description}
+
+\subsection{Lettura nel kernel}
+Indipendentemente dal channel order scelto, la lettura di un pixel da un'immagine restituisce sempre un vettore a quattro componenti (R, G, B, A). Le componenti non definite dall'order vengono impostate a valori di default (0 o 1 a seconda della specifica).
