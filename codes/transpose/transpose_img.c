@@ -1,4 +1,3 @@
-/* Host code of transpose with local memory usage */
 #include <stdio.h>
 #include <stdlib.h>
 #include "../ocl_boiler.h"
@@ -9,7 +8,7 @@ cl_event init(cl_command_queue que, cl_kernel init_k, cl_mem mat, cl_int nrows, 
 	cl_event init_evt;
 
 	const size_t lws[2] = { lws_cli, lws_cli };
-	const size_t gws[2] = { round_mul_up(ncols, lws[0]), round_mul_up(nrows, lws[1]) };
+	const size_t gws[2] = { round_mul_up(nrows, lws[0]), round_mul_up(ncols, lws[1]) };
 
 	cl_uint arg_index = 0;
 	err = clSetKernelArg(init_k, arg_index, sizeof(cl_mem), &mat);
@@ -29,14 +28,13 @@ cl_event init(cl_command_queue que, cl_kernel init_k, cl_mem mat, cl_int nrows, 
 
 cl_event transpose(cl_command_queue que, cl_kernel transpose_k,
 	cl_mem tras, cl_mem orig, cl_int t_rows, cl_int t_cols,
-	cl_int lws_cli,	cl_event init_evt)
+	cl_int lws_cli, cl_event init_evt)
 {
 	cl_int err;
 	cl_event transpose_evt;
 
 	const size_t lws[2] = { lws_cli, lws_cli };
 	const size_t gws[2] = { round_mul_up(t_rows, lws[0]), round_mul_up(t_cols, lws[1]) };
-	// printf("GWS: %zu x %zu\n", gws[0], gws[1]);
 
 	cl_uint arg_index = 0;
 	err = clSetKernelArg(transpose_k, arg_index, sizeof(cl_mem), &tras);
@@ -49,9 +47,6 @@ cl_event transpose(cl_command_queue que, cl_kernel transpose_k,
 	ocl_check(err, "transpose_k set kernel arg %u", arg_index);
 	++arg_index;
 	err = clSetKernelArg(transpose_k, arg_index, sizeof(t_cols), &t_cols);
-	ocl_check(err, "transpose_k set kernel arg %u", arg_index);
-	++arg_index;
-	err = clSetKernelArg(transpose_k, arg_index, lws_cli*lws_cli*sizeof(cl_int), NULL);
 	ocl_check(err, "transpose_k set kernel arg %u", arg_index);
 
 	err = clEnqueueNDRangeKernel(que, transpose_k, 2, NULL, gws, lws, 1, &init_evt, &transpose_evt);
@@ -111,18 +106,18 @@ int main(int argc, char *argv[])
 	cl_mem d_tras = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, memsize, NULL, &err);
 	ocl_check(err, "clCreateBuffer fallito (tras)");
 
-	const char *kname_init = "init_k";
-	const char *kname_tras = "transpose_lmem_k";
+	const char *kname_init = "init_img_k";
+    const char *kname_tras = "transpose_img_k";
 	cl_kernel init_k = clCreateKernel(prog, kname_init, &err);
 	ocl_check(err, "clCreateKernel %s fallito", kname_init);
-	cl_kernel transpose_k = clCreateKernel(prog, kname_tras, &err);
+    cl_kernel transpose_k = clCreateKernel(prog, kname_tras, &err);
 	ocl_check(err, "clCreateKernel %s fallito", kname_tras);
 
 	cl_event init_evt = init(que, init_k, d_orig, nrows_orig, ncols_orig, lws);
 
-	cl_int nrows_tras = ncols_orig;
-	cl_int ncols_tras = nrows_orig;
-	cl_event transpose_evt = transpose(que, transpose_k, d_tras, d_orig, nrows_tras, ncols_tras, lws, init_evt);
+    cl_int nrows_tras = ncols_orig;
+    cl_int ncols_tras = nrows_orig;
+    cl_event transpose_evt = transpose(que, transpose_k, d_tras, d_orig, nrows_tras, ncols_tras, lws, init_evt);
 
 	cl_event wait_list[] = { init_evt, transpose_evt };
 	cl_event read_evt;
@@ -147,7 +142,7 @@ int main(int argc, char *argv[])
 	printf("read: %.4gms %.4gGB/s\n", read_ns*1.0e-6, memsize/(double)read_ns);
 	printf("unmap: %.4gms %.4gGB/s\n", unmap_ns*1.0e-6, memsize/(double)unmap_ns);
 
-    /* Cleanup */
+	/* Cleanup */
 	clReleaseEvent(init_evt);
     clReleaseEvent(transpose_evt);
     clReleaseEvent(read_evt);

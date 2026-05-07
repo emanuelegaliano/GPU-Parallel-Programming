@@ -1,0 +1,59 @@
+kernel void init_k(global int *vec, int nels)
+{
+	int i = get_global_id(0);
+	if (i < nels)
+		vec[i] = i + 1;
+}
+
+kernel void sum2_k(
+	global int * restrict out,
+	global const int2 * restrict in,
+	int npairs)
+{
+	int i = get_global_id(0);
+	if (i < npairs) {
+		int2 pair = in[i];
+		out[i] = pair.x + pair.y;
+	}
+}
+
+kernel void sum4_k(
+	global int * restrict out,
+	global const int4 * restrict in,
+	int nquarts)
+{
+	int i = get_global_id(0);
+	if (i < nquarts) {
+		int4 v = in[i];
+		out[i] = (v.x + v.y) + (v.z + v.w); // somme indipendenti
+	}
+}
+
+kernel void sum8_k(
+	global int * restrict out,
+	global const int8 * restrict in,
+	int neights)
+{
+	int i = get_global_id(0);
+	if (i < neights) {
+		int8 v8 = in[i];
+		int4 v4 = v8.even + v8.odd;
+		int2 v2 = v4.even + v4.odd;
+		out[i] = v2.even + v2.odd;
+	}
+}
+
+kernel void sum16_k(
+	global int * restrict out,
+	global const int16 * restrict in,
+	int nhex)
+{
+	int i = get_global_id(0);
+	if (i < nhex) {
+		int16 v16 = in[i];
+		int8 v8 = v16.even + v16.odd;
+		int4 v4 = v8.even + v8.odd;
+		int2 v2 = v4.even + v4.odd;
+		out[i] = v2.even + v2.odd;
+	}
+}

@@ -6,6 +6,19 @@ kernel void init_k(global int *mat, int rows, int cols){
         mat[r*cols + c] = r-c;
 }
 
+// init kernel for transpose_img.c
+kernel void init_img_k(write_only image2d_t mat)
+{
+	int r = get_global_id(1);
+	int c = get_global_id(0);
+
+	int cols = get_image_width(mat);
+	int rows = get_image_height(mat);
+
+	if (r < rows && c < cols)
+		write_imagei(mat, (int2)(c, r), (int4)(r-c, 0, 0, 0)); // i = int2 coordinates, int4 color
+}
+
 // t_rows, t_cols -> righe e colonne della trasposta
 kernel void transpose_k(global int * restrict trasposta, global const int * restrict originale, int t_rows, int t_cols){
     int t_c = get_global_id(0);
@@ -53,5 +66,21 @@ kernel void transpose_lmem_k(global int * restrict trasposta,
 #else
 		trasposta[t_r*t_cols + t_c] = cache[l_c*lws + l_r];
 #endif
+	}
+}
+
+// t_rows, t_cols -> righe e colonne della trasposta
+kernel void transpose_img_k(
+	global int * restrict trasposta,
+	read_only image2d_t originale,
+	int t_rows, int t_cols)
+{
+	int t_c = get_global_id(0);
+	int t_r = get_global_id(1);
+
+	if (t_r < t_rows && t_c < t_cols) {
+		int2 rc = (int2)(t_r, t_c);
+		int4 px = read_imagei(originale, rc);
+		trasposta[t_r*t_cols + t_c] = px.x;
 	}
 }
