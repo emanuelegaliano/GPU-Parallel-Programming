@@ -23,14 +23,14 @@ cl_event init(cl_command_queue que, cl_kernel init_k, cl_mem vec1, cl_int nels, 
 	return init_evt;
 }
 
-cl_event sum2(cl_command_queue que, cl_kernel sum_k,
-	cl_mem out, cl_mem in, cl_int npairs, cl_int lws_cli, cl_event dep_evt)
+cl_event sum(cl_command_queue que, cl_kernel sum_k,
+	cl_mem out, cl_mem in, cl_int nvecs, int nwg, cl_int lws_cli, cl_event dep_evt)
 {
 	cl_int err;
 	cl_event sum_evt;
 
 	const size_t lws[1] = { lws_cli };
-	const size_t gws[1] = { round_mul_up(npairs, lws[0]) };
+	const size_t gws[1] = { nwg*lws[0] };
 
 	cl_uint arg_index = 0;
 	err = clSetKernelArg(sum_k, arg_index, sizeof(cl_mem), &out);
@@ -39,7 +39,10 @@ cl_event sum2(cl_command_queue que, cl_kernel sum_k,
 	err = clSetKernelArg(sum_k, arg_index, sizeof(cl_mem), &in);
 	ocl_check(err, "sum_k set kernel arg %u", arg_index);
 	++arg_index;
-	err = clSetKernelArg(sum_k, arg_index, sizeof(cl_int), &npairs);
+	err = clSetKernelArg(sum_k, arg_index, lws[0]*sizeof(cl_int), NULL);
+	ocl_check(err, "sum_k set kernel arg %u", arg_index);
+	++arg_index;
+	err = clSetKernelArg(sum_k, arg_index, sizeof(cl_int), &nvecs);
 	ocl_check(err, "sum_k set kernel arg %u", arg_index);
 
 	err = clEnqueueNDRangeKernel(que, sum_k, 1, NULL, gws, lws, 1, &dep_evt, &sum_evt);
@@ -59,8 +62,8 @@ void verify(const cl_int result, int nels) {
 
 int main(int argc, char *argv[])
 {
-	if (argc != 3) {
-		fprintf(stderr, "%s nels lws\n", argv[0]);
+	if (argc != 5) {
+		fprintf(stderr, "%s nels vec lws nwg\n", argv[0]);
 		exit(1);
 	}
 	int nels = atoi(argv[1]);
@@ -68,14 +71,28 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "nels deve essere almeno 1\n");
 		exit(2);
 	}
-	if (nels & (nels - 1)) {
-		fprintf(stderr, "nels deve essere una potenza di 2\n");
-		exit(2);
+    int vec = atoi(argv[2]);
+	if (vec != 16 && vec != 4) {
+		fprintf(stderr, "vec deve essere 4 o 16\n");
+		exit(3);
 	}
-	int lws = atoi(argv[2]);
+	int lws = atoi(argv[3]);
 	if (lws < 1) {
 		fprintf(stderr, "lws deve essere almeno 1\n");
-		exit(2);
+		exit(4);
+	}
+	int nwg = atoi(argv[4]);
+	if (nwg < 1) {
+		fprintf(stderr, "nwg deve essere almeno 1\n");
+		exit(5);
+	}
+	if (nels & (vec - 1)) {
+		fprintf(stderr, "nels %d deve essere multiplo di nvec %d\n", nels, vec);
+		exit(6);
+	}
+	if (nwg > 1 && (nwg & (vec - 1))) {
+		fprintf(stderr, "nwg %d deve essere multiplo di nvec %d\n", nwg, vec);
+		exit(7);
 	}
 
 	cl_platform_id p = select_platform();
@@ -94,34 +111,27 @@ int main(int argc, char *argv[])
 
 	cl_kernel init_k = clCreateKernel(prog, "init_k", &err);
 	ocl_check(err, "clCreateKernel init_k fallito");
-	cl_kernel sum2_k = clCreateKernel(prog, "sum2_k", &err);
-	ocl_check(err, "clCreateKernel sum2_k fallito");
+
+	char sum_vk_name[22] = {0};
+	snprintf(sum_vk_name, 21, "sum%d_lmem_sliding_k", vec);
+	cl_kernel sum_k = clCreateKernel(prog, sum_vk_name, &err);
+	ocl_check(err, "clCreateKernel %s fallito", sum_vk_name);
 
 	cl_event init_evt = init(que, init_k, d_vec1, nels, lws);
 
-	int npairs = nels/2;
-    // Calcolo di steps = log_2(nels)
-	int steps = 1;
-	for (; npairs > 0 ; ++steps, npairs /= 2) {
-	}
-	cl_event *sum2_evt = calloc(steps, sizeof(cl_event));
-	sum2_evt[0] = init_evt;
+	// gli step di riduzione sono 2 o 3 (solo se nwg > 1)
+	const int steps = 2 + (nwg > 1);
+	cl_event sum_evt[steps];
+	sum_evt[0] = init_evt;
 
-	cl_mem d_in = d_vec1;
-	cl_mem d_out = d_vec2;
-	npairs = nels/2;
-	
-    // Riduzione a coppie
-	for (int i = 1 ; npairs > 0 ; ++i, npairs /= 2) {
-		sum2_evt[i] = sum2(que, sum2_k, d_out, d_in, npairs, lws, sum2_evt[i-1]);
-		cl_mem t = d_in;
-		d_in = d_out;
-		d_out = t;
+	sum_evt[1] = sum(que, sum_k, d_vec2, d_vec1, nels/vec, nwg, lws, sum_evt[0]);
+	if (nwg > 1) {
+		sum_evt[2] = sum(que, sum_k, d_vec2, d_vec2, nwg/vec, 1, lws, sum_evt[1]);
 	}
 
 	cl_event read_evt;
-	cl_int risultato; // risultato della riduzione
-	err = clEnqueueReadBuffer(que, d_in, CL_TRUE, 0, sizeof(cl_int), &risultato, steps, sum2_evt, &read_evt);
+	cl_int risultato;
+	err = clEnqueueReadBuffer(que, d_vec2, CL_TRUE, 0, sizeof(cl_int), &risultato, steps, sum_evt, &read_evt);
 	ocl_check(err, "read buffer d_vec");
 
 	verify(risultato, nels);
@@ -132,18 +142,21 @@ int main(int argc, char *argv[])
 	cl_ulong init_ns = runtime_ns(init_evt);
 	printf("init: %.4gms %.4gGB/s %.4gGE/s\n", init_ns*1.0e-6, memsize/(double)init_ns, nels/(double)init_ns);
 
-    // Efficienza totale della riduzione
-	cl_ulong reduction_ns = total_runtime_ns(sum2_evt[1], sum2_evt[steps-1]); // input = first and last event
+	cl_ulong reduction_ns = total_runtime_ns(sum_evt[1], sum_evt[steps-1]);
 	printf("reduction: %.4gms %.4gGE/s\n", reduction_ns*1.0e-6, nels/(double)reduction_ns);
 
-    // Efficienza dei singoli step della riduzione
-	npairs = nels/2;
-	for (int i = 1 ; npairs > 0 ; ++i, npairs /= 2) {
-		cl_ulong step_ns = runtime_ns(sum2_evt[i]);
+	for (int i = 1; i < steps; ++i) {
+		cl_ulong step_ns = runtime_ns(sum_evt[i]);
+		
+		// Al passo 1 leggiamo 'nels' e scriviamo 'nwg'
+		// Al passo 2 leggiamo 'nwg' e scriviamo 1
+		int n_in  = (i == 1) ? nels : nwg;
+		int n_out = (i == 1) ? nwg  : 1;
+
 		printf("step #%d: %.4gms %.4gGB/s %.4gGE/s\n", i,
-			step_ns*1.0e-6,
-			npairs*3*sizeof(cl_int)/(double)step_ns,
-			npairs/(double)step_ns);
+			step_ns * 1.0e-6,
+			(n_in + n_out) * sizeof(cl_int) / (double)step_ns,
+			n_in / (double)step_ns);
 	}
 
 	cl_ulong read_ns = runtime_ns(read_evt);
@@ -153,11 +166,10 @@ int main(int argc, char *argv[])
     clReleaseEvent(init_evt);
     clReleaseEvent(read_evt);
     for (int i = 1; i < steps; ++i) {
-        clReleaseEvent(sum2_evt[i]);
+        clReleaseEvent(sum_evt[i]);
     }
-    free(sum2_evt);
     clReleaseKernel(init_k);
-    clReleaseKernel(sum2_k);
+    clReleaseKernel(sum_k);
     clReleaseProgram(prog);
     clReleaseMemObject(d_vec1);
     clReleaseMemObject(d_vec2);

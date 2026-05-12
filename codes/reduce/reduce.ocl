@@ -1,3 +1,12 @@
+/*
+Name convention:
+- sum*_k -> kernel with vectorization
+- sum*_lmem_k -> kernel with vectorization and local memory usage
+- sum*_sliding_k -> kernel with vectorization and sliding window usage
+- sum*_lmem_sliding_k -> kernel with vectorization, sliding window and local memory usage
+*/
+
+
 kernel void init_k(global int *vec, int nels)
 {
 	int i = get_global_id(0);
@@ -56,4 +65,167 @@ kernel void sum16_k(
 		int2 v2 = v4.even + v4.odd;
 		out[i] = v2.even + v2.odd;
 	}
+}
+
+kernel void sum4_lmem_k(
+	global int * restrict out,
+	global const int4 * restrict in,
+	local int * restrict lmem, // cache con lws elementi
+	int nhex)
+{
+	const int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int group = get_group_id(0);
+
+	// riduzione locale
+	int val = 0;
+	if (gi < nhex) {
+		int4 v4 = in[gi];
+		int2 v2 = v4.even + v4.odd;
+		val = v2.even + v2.odd;
+	}
+	lmem[li] = val; // scrittura in local memory
+
+	// Riduzione a livello di work group
+	// Ad ogni iterazione solo la metà dei work item è attiva
+	for (int active = lws/2 ; active > 0 ; active /=2) {
+		barrier(CLK_LOCAL_MEM_FENCE);
+		if (li < active) {
+			val += lmem[li + active];
+			lmem[li] = val;
+		}
+	}
+
+	// il 1° work item scrive il risultato del work group in memoria globale
+	if (li == 0) {
+		out[group] = val;
+	}
+
+}
+
+kernel void sum16_lmem_k(
+	global int * restrict out,
+	global const int16 * restrict in,
+	local int * restrict lmem,
+	int nhex)
+{
+	const int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int group = get_group_id(0);
+
+	int val = 0;
+	if (gi < nhex) {
+		int16 v16 = in[gi];
+		int8 v8 = v16.even + v16.odd;
+		int4 v4 = v8.even + v8.odd;
+		int2 v2 = v4.even + v4.odd;
+		val = v2.even + v2.odd;
+	}
+	lmem[li] = val;
+
+	for (int active = lws/2 ; active > 0 ; active /=2) {
+		barrier(CLK_LOCAL_MEM_FENCE);
+		if (li < active) {
+			val += lmem[li + active];
+			lmem[li] = val;
+		}
+	}
+
+	if (li == 0) {
+		out[group] = val;
+	}
+
+}
+
+
+// Sliding window:
+// gws (fisso) * carico = data size (fisso)
+// carico di lavoro = data size / gws
+kernel void sum16_sliding_k(
+	global int * restrict out,
+	global const int16 * restrict in,
+	int nhex)
+{
+	int i = get_global_id(0);
+	int16 v16 = (int16)(0);
+	while (i < nhex) { // finché c'è un vettore da elaborare
+		v16 += in[i];
+		i += get_global_size(0);
+	}
+	int8 v8 = v16.even + v16.odd;
+	int4 v4 = v8.even + v8.odd;
+	int2 v2 = v4.even + v4.odd;
+	out[i] = v2.even + v2.odd;
+}
+
+kernel void sum4_lmem_sliding_k(
+	global int * restrict out,
+	global const int4 * restrict in,
+	local int * restrict lmem,
+	int nhex)
+{
+	int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int group = get_group_id(0);
+
+	int4 v4 = (int4)(0);
+	while (gi < nhex) {
+		v4 += in[gi];
+		gi += get_global_size(0);
+	}
+	int2 v2 = v4.even + v4.odd;
+	int val = v2.even + v2.odd;
+	lmem[li] = val;
+
+	for (int active = lws/2 ; active > 0 ; active /=2) {
+		barrier(CLK_LOCAL_MEM_FENCE);
+		if (li < active) {
+			val += lmem[li + active];
+			lmem[li] = val;
+		}
+	}
+
+	if (li == 0) {
+		out[group] = val;
+	}
+
+}
+
+kernel void sum16_lmem_sliding_k(
+	global int * restrict out,
+	global const int16 * restrict in,
+	local int * restrict lmem,
+	int nhex)
+{
+	int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int group = get_group_id(0);
+
+	int16 v16 = (int16)(0);
+	while (gi < nhex) {
+		v16 += in[gi];
+		gi += get_global_size(0);
+	}
+	int8 v8 = v16.even + v16.odd;
+	int4 v4 = v8.even + v8.odd;
+	int2 v2 = v4.even + v4.odd;
+	int val = v2.even + v2.odd;
+	lmem[li] = val;
+
+	for (int active = lws/2 ; active > 0 ; active /=2) {
+		barrier(CLK_LOCAL_MEM_FENCE);
+		if (li < active) {
+			val += lmem[li + active];
+			lmem[li] = val;
+		}
+	}
+
+	if (li == 0) {
+		out[group] = val;
+	}
+
 }
