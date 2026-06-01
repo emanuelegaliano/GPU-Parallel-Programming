@@ -1,0 +1,73 @@
+\chapter{Scan parallelo (Prefix Sum)}\label{chap:opencl_scan}
+
+In questo capitolo viene esaminato lo \emph{scan} parallelo (noto anche come \emph{prefix sum}), un pattern algoritmico fondamentale caratterizzato dal mantenimento di tutti i risultati parziali intermedi di una riduzione cumulativa. Si analizzeranno le sue applicazioni, le problematiche legate alla non-commutatività dell'output e le strategie per implementarlo su larga scala.
+
+% =====================================================
+\section{Definizione e campi di applicazione}\label{sec:scan_def}
+% =====================================================
+
+Dato un vettore di elementi in input, l'operazione di scan genera un vettore di output in cui ciascun elemento rappresenta la riduzione cumulativa dei precedenti. Si identificano due varianti principali:
+\begin{itemize}
+    \item \textbf{Scan inclusivo} L'elemento in posizione $i$ include nel calcolo anche l'elemento corrente dell'input. (Esempio: $[1, 2, 3, 4] \rightarrow [1, 3, 6, 10]$).
+    \item \textbf{Scan esclusivo} L'elemento in posizione $i$ esclude l'elemento corrente, arrestandosi a quello immediatamente precedente. Il primo componente dell'output è tipicamente impostato sull'elemento neutro dell'operatore. (Esempio: $[1, 2, 3, 4] \rightarrow [0, 1, 3, 6]$).
+\end{itemize}
+
+Mentre l'algoritmo seriale è banale e richiede un singolo ciclo lineare, la parallelizzazione è complessa a causa della dipendenza sequenziale dei dati. Lo scan costituisce il blocco logico di base per:
+\begin{description}
+    \item[Algoritmi di ordinamento] Come il Radix Sort o il Quicksort parallelo, per ripartire gli elementi rispetto a un pivot calcolandone preventivamente gli indici di destinazione tramite vettori booleani.
+    \item[Stream Compaction] Tecnica per filtrare e compattare un array eliminando elementi non validi o scartati. Effettuando lo scan su un vettore di controllo binario, il valore ottenuto indica direttamente la posizione contigua di scrittura nell'array di output compattato. L'ultimo elemento dello scan inclusivo indica la dimensione finale del dataset filtrato.
+\end{description}
+
+% =====================================================
+\section{Scan a livello di work-item e gestione delle code}\label{sec:scan_wi_code}
+% =====================================================
+
+L'implementazione su GPU prevede che ogni singolo work-item effettui innanzitutto uno scan parziale sequenziale all'interno dei propri registri privati operando su un tipo vettoriale come \texttt{int4}.
+
+\begin{code}[caption={Scansione locale di una quartina}, label={code:scan_quartina}]
+/* Supponendo val = (1, 2, 3, 4) */
+val.s1 += val.s0; // 1, 3, 3, 4
+val.s2 += val.s1; // 1, 3, 6, 4
+val.s3 += val.s2; // 1, 3, 6, 10
+\end{code}
+
+Tuttavia, ad ogni work-item (ad eccezione del primo) manca un'informazione essenziale: la somma complessiva di tutti i dati elaborati dai thread precedenti. Questo valore mancante costituisce la \textbf{coda} (\emph{tail}) dello scan parziale.
+
+Per consentire la cooperazione intra-workgroup, ogni work-item memorizza la propria coda (\texttt{val.s3}) all'interno di un array condiviso in local memory. Successivamente, i thread eseguono uno scan inclusivo su questo array di code. Al termine, ciascun work-item corregge i propri elementi locali sommandovi la coda calcolata dal thread immediatamente precedente (\texttt{lmem[li-1]}), prima di scrivere il risultato definitivo in global memory.
+
+% =====================================================
+\section{Scan completo con un singolo work-group}\label{sec:scan_singolo_wg}
+% =====================================================
+
+Qualora l'intero dataset possa essere elaborato da un unico work-group, è possibile implementare una sliding window efficiente. A differenza della riduzione, lo scan produce un output che risente strettamente dell'ordine sequenziale (non-commutatività spaziale del risultato). Di conseguenza, la sliding window non può procedere a balzi interleaved, ma deve obbligatoriamente scorrere lungo sezioni strettamente contigue di memoria.
+
+Essendovi un unico work-group attivo, il fattore correttivo globale può essere accumulato stabilmente all'interno di una variabile di registro privata tra un'iterazione e l'altra del ciclo.
+
+Un aspect critico risiede nella formulazione della condizione di permanenza nel ciclo \texttt{while}. Controllare il global ID del singolo thread causerebbe deadlock immediati: i thread associati a indici oltre i limiti dell'array uscirebbero prematuramente, impedendo il raggiungimento delle barriere di sincronizzazione (\texttt{barrier}) necessarie allo scan delle code in local memory per i thread superstiti. La condizione corretta verifica che l'inizio del blocco del work-group sia valido:
+
+\begin{code}[caption={Struttura del ciclo while per scan a singolo work-group}, label={code:scan_while_correct}]
+// gid - lid esprime l'indice globale del primo work-item del gruppo
+while ((gi - li) < nquarts) {
+    /* 1. Caricamento dati in local memory */
+    /* 2. Scan parziale del blocco */
+    /* 3. Applicazione del fattore di correzione del ciclo precedente */
+    /* 4. Aggiornamento della correzione con l'ultima coda inclusiva */
+    /* 5. Scrittura contigua dei dati */
+    
+    gi += get_global_size(0);
+}
+\end{code}
+
+% =====================================================
+\section{Scan su larga scala (Multi-Work-Group)}\label{sec:scan_multi}
+% =====================================================
+
+Quando la dimensione dei dati richiede l'impiego di molteplici work-group per sfruttare appieno l'hardware della GPU, il coordinamento deve essere strutturato in tre fasi distinte orchestrate dall'host:
+
+\begin{enumerate}
+    \item \textbf{Scan dei blocchi} Il dataset viene suddiviso in sezioni contigue assegnate a ciascun gruppo, calcolando il carico di lavoro come \texttt{quads\_per\_wg = (nquads + nwg - 1) / nwg}. Ogni gruppo esegue uno scan locale indipendente e scrive l'ultima coda del proprio blocco in un array temporaneo globale (\texttt{d\_tails}).
+    \item \textbf{Scan delle code} Un kernel di supporto (eseguito tipicamente da un unico work-group dedicato) esegue uno scan esclusivo sull'array \texttt{d\_tails}, calcolando l'esatto offset correttivo globale spettante a ciascun blocco.
+    \item \textbf{Kernel delle correzioni} I work-group originari vengono rilanciati sul dataset per sommare ad ogni elemento l'offset calcolato nella fase precedente (\texttt{d\_tails[get\_group\_id(0) - 1]}). Il primo gruppo non subisce alcuna correzione.
+\end{enumerate}
+
+Questo approccio a tre passi comporta lo svantaggio di dover rileggere integralmente il dataset durante la fase finale di correzione, ma rappresenta l'unico meccanismo scalabile per elaborare array massivi su hardware GPGPU eterogeneo.
