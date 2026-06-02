@@ -1,0 +1,226 @@
+kernel void init_k(global int *vec, int nels)
+{
+	int i = get_global_id(0);
+	if (i < nels)
+		vec[i] = i + 1;
+}
+
+// Scan in local memory (usato per le code)
+void local_memory_scan(
+	local        int  * restrict lmem,
+	int val)
+{
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+
+	lmem[li] = val;
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for (int bitmask = 1; bitmask < lws; bitmask *=2 ) {
+		if (li & bitmask)
+			lmem[li] += lmem[(li & ~bitmask) | (bitmask - 1)];
+		barrier(CLK_LOCAL_MEM_FENCE);
+	}
+}
+
+kernel void scan_v4_k(
+	global       int4 * restrict out,
+	global       int  * restrict code,
+	global const int4 * restrict in,
+	local        int  * restrict lmem,
+	int nquads)
+{
+	const int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+
+	int4 val = in[gi];
+
+// somme scalari e sequenziali
+#if 0
+	val.s1 += val.s0;
+	val.s2 += val.s1;
+	val.s3 += val.s2;
+
+// somme indipendenti (a coppie)
+#else
+	val.s13 += val.s02;
+	val.s23 += val.s11; 
+#endif
+
+	local_memory_scan(lmem, val.s3);
+
+	if (li > 0) {
+		val += lmem[li-1];
+	}
+
+	out[gi] = val;
+
+	if (li == lws - 1) {
+		code[get_group_id(0)] = val.s3;
+	}
+}
+
+// Scan con sliding window (con più di 1 wg)
+kernel void scan_v4_sliding_k(
+	global       int4 * restrict out,
+	global       int  * restrict code,
+	global const int4 * restrict in,
+	local        int  * restrict lmem,
+	int nquads)
+{
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int nwg = get_num_groups(0);
+
+	// Dati per ciascun wg
+	int quads_per_wg = (nquads + nwg - 1)/nwg;
+	quads_per_wg = lws*((quads_per_wg + lws - 1)/lws);
+	// Indice del wg
+	int gi = quads_per_wg*get_group_id(0) + li;
+	// Fine del blocco di dati da elaborare per il wg
+	const int block_end = min(quads_per_wg*((int)get_group_id(0)+1), nquads);
+
+	int correzione = 0;
+	int4 val = (int4)(0);
+	// Continua finché il primo wi ha dati da elaborare
+	while (gi - li < block_end) {
+		if (gi < block_end) {
+			val = in[gi];
+			val.s13 += val.s02;
+			val.s23 += val.s11;
+		} else {
+			val = (int4)(0);
+		}
+
+		local_memory_scan(lmem, val.s3);
+
+		if (li > 0) {
+			val += lmem[li-1];
+		}
+
+		val += correzione;
+		correzione += lmem[lws - 1];
+
+		out[gi] = val;
+		gi += lws;
+		barrier(CLK_LOCAL_MEM_FENCE);
+	}
+
+	if (nwg > 1 && (li == lws - 1)) {
+		code[get_group_id(0)] = val.s3;
+	}
+}
+
+kernel void scan_v4_sliding_correction_k(
+	global       int4 * restrict out,
+	global const int  * restrict code, // scan delle code
+	int nquads)
+{
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int nwg = get_num_groups(0);
+
+	int quads_per_wg = (nquads + nwg - 1)/nwg;
+	quads_per_wg = lws*((quads_per_wg + lws - 1)/lws);
+
+	int gi = quads_per_wg*get_group_id(0) + li;
+
+	const int block_end = min(quads_per_wg*((int)get_group_id(0)+1), nquads);
+
+	if (get_group_id(0) == 0) return;
+
+	int correzione = code[get_group_id(0)-1];
+	while (gi < block_end) {
+		out[gi] += (int4)(correzione);
+		gi += lws;
+	}
+}
+
+
+kernel void scan_v8_k(
+	global       int8 * restrict out,
+	global       int  * restrict code,
+	global const int8 * restrict in,
+	local        int  * restrict lmem,
+	int nhex)
+{
+	const int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+
+	int8 val = in[gi];
+#if 0
+	val.s1 += val.s0;
+	val.s2 += val.s1;
+	val.s3 += val.s2;
+	val.s4 += val.s3;
+	val.s5 += val.s4;
+	val.s6 += val.s5;
+	val.s7 += val.s6;
+#else
+	val.s1357 += val.s0246; // odd += even
+	val.s2367 += val.s1155;
+	val.s4567 += val.s3333;
+#endif
+
+	local_memory_scan(lmem, val.s7);
+
+	if (li > 0) {
+		val += lmem[li-1];
+	}
+
+	out[gi] = val;
+
+	if (li == lws - 1) {
+		code[get_group_id(0)] = val.s7;
+	}
+}
+
+kernel void scan_v16_k(
+	global       int16 * restrict out,
+	global       int   * restrict code,
+	global const int16 * restrict in,
+	local        int   * restrict lmem,
+	int nhex)
+{
+	const int gi = get_global_id(0);
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+
+	int16 val = in[gi];
+#if 0 
+	val.s1 += val.s0;
+	val.s2 += val.s1;
+	val.s3 += val.s2;
+	val.s4 += val.s3;
+	val.s5 += val.s4;
+	val.s6 += val.s5;
+	val.s7 += val.s6;
+	val.s8 += val.s7;
+	val.s9 += val.s8;
+	val.sa += val.s9;
+	val.sb += val.sa;
+	val.sc += val.sb;
+	val.sd += val.sc;
+	val.se += val.sd;
+	val.sf += val.se;
+#else
+	val.s13579bdf += val.s02468ace; // odd += even
+	val.s2367abef += val.s115599dd;
+	val.s4567cdef += val.s3333bbbb;
+	val.s89abcdef += val.s99999999; // high += s9
+#endif
+
+	local_memory_scan(lmem, val.sf);
+
+	if (li > 0) {
+		val += lmem[li-1];
+	}
+
+	out[gi] = val;
+
+	if (li == lws - 1) {
+		code[get_group_id(0)] = val.sf;
+	}
+}
