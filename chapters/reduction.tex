@@ -1,0 +1,117 @@
+\chapter{Riduzioni parallele}\label{chap:opencl_reduce}
+
+In questo capitolo si introduce il pattern algoritmico della riduzione parallela su GPU, analizzandone i requisiti matematici e l'evoluzione ottimizzativa attraverso quattro implementazioni progressivamente più efficienti: ad albero in global memory, vettoriale, con local memory e infine tramite sliding window globale per la saturazione dell'hardware.
+
+% =====================================================
+\section{Il concetto di riduzione e requisiti degli operatori}\label{sec:reduce_concetto}
+% =====================================================
+
+La riduzione consiste nell'estrazione di un singolo dato a partire da un insieme numeroso di elementi (ad esempio, il calcolo del valore massimo, minimo o della somma degli elementi di un vettore). In un'implementazione seriale in linguaggio C, l'operazione viene eseguita sequenzialmente tramite un accumulatore e un ciclo \texttt{for}:
+
+\begin{code}[caption={Riduzione seriale in C}, label={code:reduce_seriale}]
+int s = neutral_element_op;
+for(int i = 0; i < nels; ++i){
+    s = op(s, a[i]);
+}
+\end{code}
+
+Per poter parallelizzare questo processo su un'architettura GPU, l'operatore binario utilizzato (\texttt{op}) deve soddisfare almeno l'associatività, e idealmente anche la commutatività:
+\begin{description}
+    \item[Associatività] Permette di organizzare liberamente l'ordine delle parentesi e quindi di strutturare il calcolo in una topologia ad albero:
+    \[
+    \texttt{op}(a, \texttt{op}(b, c)) == \texttt{op}(\texttt{op}(a, b), c)
+    \]
+    La somma tra numeri interi è strettamente associativa. Al contrario, la somma tra numeri in virgola mobile (\texttt{float}) non lo è in modo rigoroso a causa degli arrotondamenti e della precisione limitata della rappresentazione mantissa-esponente.
+    \item[Commutatività] Consente di scambiare l'ordine degli operandi senza alterare il risultato finale:
+    \[
+    \texttt{op}(a, b) == \texttt{op}(b, a)
+    \]
+    Quando associatività e commutatività cooperano, i dati possono essere raggruppati ed elaborati in qualsiasi ordine spaziale e temporale, sbloccando ottimizzazioni avanzate basate su accessi a balzi o finestre scorrevoli.
+\end{description}
+
+% =====================================================
+\section{Versione base: schema ad albero in global memory}\label{sec:reduce_albero}
+% =====================================================
+
+La prima strategia parallela prevede una struttura ad albero binario. Si considera il vettore iniziale come composto da coppie di elementi (\texttt{int2}), assegnando ad ogni work-item il compito di caricare una coppia, effettuarne la somma e scriverne il risultato in un vettore di output dimezzato.
+
+\begin{code}[caption={Kernel di somma ad albero (passo singolo)}, label={code:sum2_k}]
+kernel void sum2_k(global int * restrict out,
+                   global const int2 * restrict in, int npairs)
+{
+    int i = get_global_id(0);
+    if (i < npairs) {
+        int2 pair = in[i];
+        out[i] = pair.x + pair.y;
+    }
+}
+\end{code}
+
+Per completare la riduzione di un intero vettore sono necessari $\log_2(\texttt{nels})$ passi successivi. Lato host, non essendo rilevanti i risultati intermedi, si utilizzano due soli buffer di memoria operanti in modalità "ping-pong", scambiando i ruoli di input e output ad ogni iterazione del ciclo host.
+
+Questo approccio presenta gravi inefficienze intrinseche: richiede un elevato numero di lanci di kernel consecutivi che fungono sostanzialmente da barriere di sincronizzazione globali della griglia. Inoltre, ad ogni passo l'hardware viene progressivamente sottoutilizzato poiché un numero crescente di work-item fallisce la condizione dell'\texttt{if} e rimane inattivo, sprecando banda e compute unit.
+
+% =====================================================
+\section{Versione con local memory}\label{sec:reduce_lmem}
+% =====================================================
+
+L'ottimizzazione successiva consiste nell'evitare di scaricare i risultati parziali nella global memory ad ogni livello dell'albero, sfruttando invece la local memory condivisa intra-workgroup. Ogni work-item esegue la propria riduzione locale e memorizza il valore nella cache del gruppo.
+
+Un approccio ingenuo ridurrebbe gli elementi adiacenti dimezzando i thread attivi, ma complicherebbe l'indicizzazione (indici pari, multipli di 4) e causerebbe gravi bank conflict in lettura. Sfruttando la commutatività, l'approccio ideale prevede invece una \emph{sliding window} interna alla local memory: i work-item attivi rimangono consecutivi e raggruppati negli stessi sottogruppi (wavefront/warp), leggendo a distanza fissa.
+
+\begin{code}[caption={Riduzione interna al work-group in local memory}, label={code:reduce_lmem_loop}]
+for (int active = lws/2 ; active > 0 ; active /= 2) {
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (li < active) {
+        val += lmem[li + active];
+        lmem[li] = val;
+    }
+}
+\end{code}
+
+Lato host, la griglia deve essere configurata accuratamente calcolando il numero di work-group necessari come rapporto tra i vettori totali e la local work size, arrotondato per eccesso tramite \texttt{round\_div\_up}, e imponendo che tale valore sia un multiplo dell'ampiezza di vettorizzazione per le iterazioni successive.
+
+% =====================================================
+\section{Versione con sliding window globale}\label{sec:reduce_sliding}
+% =====================================================
+
+L'architettura ottimale sgancia completamente la dimensione della griglia di lancio dalla mole dei dati da elaborare. Invece di lanciare un numero di thread proporzionale al dataset, si lancia un numero fisso di work-group predeterminato, calcolato per saturare in modo perfetto le compute unit dell'hardware specifico.
+
+Il numero di compute unit viene richiesto a runtime tramite la funzione host \texttt{clGetDeviceInfo} (con il parametro \texttt{CL\_DEVICE\_MAX\_COMPUTE\_UNITS}), determinando la GWS ottimale moltiplicandola per il numero desiderato di work-group per compute unit. Ogni work-item esegue un ciclo \texttt{while} cumulando i vettori a passo costante (\texttt{get\_global\_size(0)}) prima di cooperare in local memory.
+
+\begin{code}[caption={Kernel di riduzione con sliding window vettoriale e local memory}, label={code:sum16_lmem_sliding_k}]
+kernel void sum16_lmem_sliding_k(global int * restrict out,
+                                  global const int16 * restrict in,
+                                  local int * restrict lmem, int nhex)
+{
+    int gi = get_global_id(0);
+    const int li = get_local_id(0);
+    const int lws = get_local_size(0);
+    const int group = get_group_id(0);
+
+    int16 v16 = (int16)(0);
+    while (gi < nhex) {
+        v16 += in[gi];
+        gi += get_global_size(0);
+    }
+    int8 v8 = v16.even + v16.odd;
+    int4 v4 = v8.even + v8.odd;
+    int2 v2 = v4.even + v4.odd;
+    int val = v2.even + v2.odd;
+    lmem[li] = val;
+
+    for (int active = lws/2 ; active > 0 ; active /= 2) {
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (li < active) {
+            val += lmem[li + active];
+            lmem[li] = val;
+        }
+    }
+
+    if (li == 0) {
+        out[group] = val;
+    }
+}
+\end{code}
+
+Con questa tecnica, la riduzione totale si compie in appena 2 o 3 passi complessivi, riducendo l'overhead dell'host e raggiungendo prestazioni prossime alla larghezza di banda passante teorica del dispositivo di calcolo (\texttt{init}).
