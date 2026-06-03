@@ -71,3 +71,122 @@ Quando la dimensione dei dati richiede l'impiego di molteplici work-group per sf
 \end{enumerate}
 
 Questo approccio a tre passi comporta lo svantaggio di dover rileggere integralmente il dataset durante la fase finale di correzione, ma rappresenta l'unico meccanismo scalabile per elaborare array massivi su hardware GPGPU eterogeneo.
+
+\subsection{Scan dei blocchi}
+Dati \texttt{nquads} dati e \texttt{nwg} work group, ogni work group si occupa di \texttt{quads\_per\_wg = (nquads + nwg - 1)/nwg} dati.
+
+Inoltre, ciascun work group parte dall'indice \texttt{gi = quads\_per\_wg*get\_group\_id(0) + li} e termina all'indice \texttt{block\_end = min(quads\_per\_wg*((int)get\_group\_id(0)+1), nquads)}, in cui il minimo con \texttt{nquads} è necessario affinché l'ultimo work group non vada oltre la fine del dataset.
+
+Infine, l'ultimo work item scrive il risultato nell'array delle code solo se c'è più di un work group.
+
+\begin{code}[caption={Scansione dei blocchi}, label={code:scan_blocchi}]
+kernel void scan_v4_sliding_k(
+    global       int4 * restrict out,
+    global       int  * restrict code,
+    global const int4 * restrict in,
+    local        int  * restrict lmem,
+    int nquads) {
+    const int li = get_local_id(0);
+    const int lws = get_local_size(0);
+    const int nwg = get_num_groups(0);
+
+    // Dati per ciascun wg
+    int quads_per_wg = (nquads + nwg - 1)/nwg;
+    quads_per_wg = lws*((quads_per_wg + lws - 1)/lws);
+    int gi = quads_per_wg*get_group_id(0) + li;
+    // Fine del blocco di dati da elaborare
+    const int block_end = min(quads_per_wg*((int)get_group_id(0)+1), nquads);
+
+    // Scan locale
+    int correzione = 0;
+    int4 val = (int4)(0);
+    while (gi - li < block_end) {
+	if (gi < block_end) {
+		val = in[gi];
+		val.s13 += val.s02;
+		val.s23 += val.s11;
+	} else {
+		val = (int4)(0);
+	}
+
+        // Scan in local memory
+	local_memory_scan(lmem, val.s3);
+
+	if (li > 0) {
+		val += lmem[li-1];
+	}
+	val += correzione;
+	correzione += lmem[lws - 1];
+
+	out[gi] = val;
+	gi += lws;
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+    // Scrittura in global memory
+    if (nwg > 1 && (li == lws - 1)) {
+        code[get_group_id(0)] = val.s3;
+
+}
+\end{code}
+
+\subsection{Scan delle code}
+Ad ogni iterazione si selezionano i work item attivi usando una bitmask:
+
+\begin{enumerate}
+    \item \textbf{Prima iterazione} I work item attivi sono quelli di indice dispari, ovvero con il bit 0 a 1, e essi leggono gli elementi di indice immediatamente precedente.
+    \item \textbf{Seconda iterazione} I work item attivi sono quelli con il bit 1 a 1 e essi leggono gli elementi di indice con il bit 1 a 0 e il bit 0 a 1.
+    \item \textbf{Terza iterazione} I work item attivi sono quelli con il bit 3 a 1 e essi leggono gli elementi di indice con il bit 3 a 0 e i bit 0 e 1 a 1.
+\end{enumerate}
+
+Grazie all'uso della local memory si produce una sola coda (ovvero un unico scan parziale) per work group, la quale corrisponde all'ultimo elemento prodotto dall'ultimo work item.
+
+\begin{code}[caption={Scansione delle code}, label={code:scan_code}]
+void local_memory_scan(
+	local        int  * restrict lmem,
+	int val)
+{
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+
+	lmem[li] = val;
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for (int bitmask = 1; bitmask < lws; bitmask *=2 ) {
+		if (li & bitmask)
+			lmem[li] += lmem[(li & ~bitmask) | (bitmask - 1)];
+		barrier(CLK_LOCAL_MEM_FENCE);
+	}
+}
+\end{code}
+
+
+\subsection{Kernel delle correzioni}
+Le correzioni devono essere fatte con le stesse distribuzioni di work group usate per lo scan, ovvero: se nello scan si usa una sliding window lo si fa anche per le correzioni, si fa l'opposto altrimenti.
+
+La correzione è l'elemento che si trova nell'array delle code all'indice \texttt{get\_group\_id(0)-1}. 
+
+Il primo work group non deve fare alcuna correzione, ma viene lanciato comunque per motivi di efficienza e maggiore facilità di gestione.
+\begin{code}[caption={Kernel delle correzioni}, label={code:scan_correzioni}]
+kernel void scan_v4_sliding_correction_k(
+	global       int4 * restrict out,
+	global const int  * restrict code, // scan delle code
+	int nquads)
+{
+	const int li = get_local_id(0);
+	const int lws = get_local_size(0);
+	const int nwg = get_num_groups(0);
+
+	int quads_per_wg = (nquads + nwg - 1)/nwg;
+	quads_per_wg = lws*((quads_per_wg + lws - 1)/lws);
+	int gi = quads_per_wg*get_group_id(0) + li;
+
+	const int block_end = min(quads_per_wg*((int)get_group_id(0)+1), nquads);
+
+	if (get_group_id(0) == 0) return;
+	int correzione = code[get_group_id(0)-1];
+	while (gi < block_end) {
+		out[gi] += (int4)(correzione);
+		gi += lws;
+	}
+}
+\end{code}
